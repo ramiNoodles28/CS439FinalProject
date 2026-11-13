@@ -3,7 +3,7 @@ from matplotlib.widgets import Button
 from matplotlib.lines import Line2D
 from core import CHANCE_COLOR, A_COLOR, B_COLOR, OVER_BUDGET, TEXT, MUTED, GRID, LIKELY, TARGET, REACH, money, money_k
 
- 
+
 MODES = [("auto", "My residency"), ("in", "All in-state"), ("out", "All out-of-state")]
 XLABEL = {"auto": "Your annual tuition", "in": "In-state tuition", "out": "Out-of-state tuition"}
 
@@ -22,7 +22,7 @@ class CostEarnings:
         self.buttons = {}
         for k, (mode, label) in enumerate(MODES):
             b = Button(top.inset_axes([k * .33, -.08, .31, .36]), label)
-            b.label.set_fontsize(7.5); 
+            b.label.set_fontsize(7.5)
             b.on_clicked(lambda _e, m=mode: self.store.update(scatter_mode=m))
             self.buttons[mode] = b
         self.ax = fig.add_subplot(gs[1])
@@ -62,27 +62,28 @@ class CostEarnings:
         if state.budget < xmax:
             ax.axvspan(state.budget, xmax, color=OVER_BUDGET, alpha=.08, lw=0)
             ax.axvline(state.budget, color=OVER_BUDGET, ls='--', lw=1)
-            ax.text(state.budget + xmax * .01, y1 - (y1 - y0) *.02, f"over budget ({money(state.budget)})", color=OVER_BUDGET, fontsize=7.5, va='top')
-            a_id, b_id = (list(state.pair) + [None, None])[:2]
-            ppy = ax.get_window_extent().height * 72 / ax.figure.dpi / (y1 - y0)
-            placed = []
-            for r, x, y, in zip(rows, xs, ys):
-                ring = A_COLOR if r.idx == a_id else B_COLOR if r.idx - b_id else 'none'
-                pair = ring !='none'
-                ax.scatter([x], [y], s=75 if pair else 28, c=CHANCE_COLOR[r.chance], edgecolors=ring, linewidths=2 if pair else 0, zorder=3)
-                right = x > .75 * xmax
-                yoff = next((o for o in (-3, 7, -13, 17) if all(abs(x - px) > .2 * xmax or abs((y - py) * ppy + o - po) > 9  for px, py, po in placed)), -3)
-                placed.append((x,y, yoff))
-                ax.annotate(r.s['ab'] + ('*' if r.s['imp'] else ''), (x, y), xytext=(-8 if right else 8, yoff), textcoords='offset points', ha='right' if right else 'left', fontsize=7.5, fontweight='bold' if pair else 'normal', color=TEXT, zorder=4)
-                self._pts.append((x, y, r))
+            ax.text(state.budget + xmax * .01, y1 - (y1 - y0) * .02, f"over budget ({money(state.budget)})", color=OVER_BUDGET, fontsize=7.5, va='top')
 
-            ax.set_xlabel(XLABEL[mode], fontsize=8, color=MUTED)
-            ax.set_ylabel('Median Earnings (10 years)', fontsize=8, color=MUTED)
-            h = [Line2D([], [], marker='o', ls='', color=c, label=n, markersize=6)
-                 for n, c in (("Reach", REACH), ("Target", TARGET), ("Likely", LIKELY))]
-            ax.legend(handles=h, loc='upper center', bbox_to_anchor=(.5, -.2), ncol=3, frameon=False, fontsize=7.5)
-            if any(r.s['imp'] for r in rows):
-                ax.text(1, -.3, '* 6-yr earnings used (10-yr missing)', transform=ax.transAxes, ha='right', fontsize=6.5, color=MUTED)
+        a_id, b_id = (list(state.pair) + [None, None])[:2]
+        ppy = ax.get_window_extent().height * 72 / ax.figure.dpi / (y1 - y0)
+        placed = []
+        for r, x, y in zip(rows, xs, ys):
+            ring = A_COLOR if r.idx == a_id else B_COLOR if r.idx == b_id else 'none'
+            pair = ring != 'none'
+            ax.scatter([x], [y], s=75 if pair else 28, c=CHANCE_COLOR[r.chance], edgecolors=ring, linewidths=2 if pair else 0, zorder=3)
+            right = x > .75 * xmax
+            yoff = next((o for o in (-3, 7, -13, 17) if all(abs(x - px) > .2 * xmax or abs((y - py) * ppy + o - po) > 9 for px, py, po in placed)), -3)
+            placed.append((x, y, yoff))
+            ax.annotate(r.s['ab'] + ('*' if r.s['imp'] else ''), (x, y), xytext=(-8 if right else 8, yoff), textcoords='offset points', ha='right' if right else 'left', fontsize=7.5, fontweight='bold' if pair else 'normal', color=TEXT, zorder=4)
+            self._pts.append((x, y, r))
+
+        ax.set_xlabel(XLABEL[mode], fontsize=8, color=MUTED)
+        ax.set_ylabel('Median Earnings (10 years)', fontsize=8, color=MUTED)
+        h = [Line2D([], [], marker='o', ls='', color=c, label=n, markersize=6)
+             for n, c in (("Reach", REACH), ("Target", TARGET), ("Likely", LIKELY))]
+        ax.legend(handles=h, loc='upper center', bbox_to_anchor=(.5, -.2), ncol=3, frameon=False, fontsize=7.5)
+        if any(r.s['imp'] for r in rows):
+            ax.text(1, -.3, '* 6-yr earnings used (10-yr missing)', transform=ax.transAxes, ha='right', fontsize=6.5, color=MUTED)
 
     def _x(self, r, mode):
         return r.s['tin'] if mode == 'in' else r.s['tout'] if mode == 'out' else r.tuition
@@ -95,19 +96,22 @@ class CostEarnings:
             b.label.set_color('white' if on else MUTED)
 
     def _hover(self, ev):
-        if self.tip is None: return
+        if self.tip is None:
+            return
         was, hit = self.tip.get_visible(), None
         if ev.inaxes is self.ax and self._pts:
             d = [np.hypot(*(self.ax.transData.transform((x, y)) - (ev.x, ev.y))) for x, y, _ in self._pts]
             if min(d) < 12:
                 hit = self._pts[int(np.argmin(d))]
-            if hit:
-                x, y, r = hit
-                self.tip.xy = (x, y)
-                self.tip.set_text(f"{r.s['ab']}\nTuition {money(x)}\nEarnings {money(y)}{'*' if r.s['imp'] else ''}\n"f"{r.chance} ({r.p:.0%})")
-            self.tip.visible(hit is not None)
-            if was != self.tip.get_visible():
-                ev.canvas.draw_idle()
+        if hit:
+            x, y, r = hit
+            self.tip.xy = (x, y)
+            self.tip.set_text(f"{r.s['ab']}\nTuition {money(x)}\nEarnings {money(y)}{'*' if r.s['imp'] else ''}\n"
+                              f"{r.chance} ({r.p:.0%})")
+        self.tip.set_visible(hit is not None)
+        if was != self.tip.get_visible():
+            ev.canvas.draw_idle()
+
 
 
         
