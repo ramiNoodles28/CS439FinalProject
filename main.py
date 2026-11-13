@@ -14,7 +14,7 @@ SECTIONS = [(ProfileMenu, 'profile'), (CollegeComparison, 'head_to_head'), (Cost
 
 def make_slots(fig):
     outer = GridSpec(1, 2, figure=fig, width_ratios=[1,5], wspace=.08, left=.02, right=.99, top=.96, bottom=.11)
-    main = outer[1].subgridspec(3, 1, height_ratios=[.6, 2.3, 2.9], hspace=.35)
+    main = outer[1].subgridspec(3, 1, height_ratios=[1.35, 2.3, 2.9], hspace=.35)
     bottom = main[2].subgridspec(1, 3, width_ratios=[1.1, 1.1, .9], wspace=.28)
     return {"profile": outer[0], "metrics": main[0], "ranking": main[1], "cost_earnings": bottom[0], "head_to_head": bottom[1], "score_lands": bottom[2]}
 
