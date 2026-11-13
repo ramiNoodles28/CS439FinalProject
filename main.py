@@ -2,20 +2,18 @@ import argparse
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from core import (State, Store, load_schools, default_selection, compute, fix_pair, DEFAULT_CSV, money)
-from cost_earnings import CostEarnings
+from cost_earnings import CostEarnings 
 from filterMenu import ProfileMenu
 from collegeComparison import CollegeComparison
-
-
+from metrics import MetricCards
 # ---- ADD SECTIONS HERE (one import + one line each). Slots: profile, metrics, ranking, cost_earnings, head_to_head, score_lands
 # Ex. (CostEarnings, 'cost_earnings')
-SECTIONS = [(ProfileMenu, 'profile'), (CollegeComparison, 'head_to_head'), (CostEarnings, 'cost_earnings')]
-
+SECTIONS = [(ProfileMenu, 'profile'), (CollegeComparison, 'head_to_head'), (CostEarnings, 'cost_earnings'), (MetricCards, 'metrics')]
 
 def make_slots(fig):
     outer = GridSpec(1, 2, figure=fig, width_ratios=[1,5], wspace=.08, left=.02, right=.99, top=.96, bottom=.11)
-    main = outer[1].subgridspec(3, 1, height_ratios=[1.35, 2.3, 2.9], hspace=.35)
-    bottom = main[2].subgridspec(1, 3, width_ratios=[1.1, 1.1, .9], wspace=.28)
+    main = outer[1].subgridspec(3, 1, height_ratios=[1.5, 2.8, 3.2], hspace=.08)
+    bottom = main[2].subgridspec(1, 3, width_ratios=[1, 1, .65], wspace=.08)
     return {"profile": outer[0], "metrics": main[0], "ranking": main[1], "cost_earnings": bottom[0], "head_to_head": bottom[1], "score_lands": bottom[2]}
 
 def build_app(csv=DEFAULT_CSV, **overrides):
