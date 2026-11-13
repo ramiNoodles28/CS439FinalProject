@@ -125,19 +125,26 @@ def fix_pair(rows, pair):
     return pair if not ids or all(p in ids for p in pair) else [ids[min(1, len(ids) - 1)], ids[-1]]
 
 def rebalance_weights(w, key, v):
+    # clamped the moved weight to 0-100 and copied the dict so the old state is not changed
     v = max(0, min(100, round(v)))
     w = dict(w)
-    others = [ k for k in w if k != key]
-    cur, rest, acc = sum(w[k] for k in others), 100 - v, v
+    w[key] = v
+
+    # created variables for the other weights, their current total, and what is left for them
+    others = [k for k in w if k != key]
+    cur = sum(w[k] for k in others)
+    rest = 100 - v
+
+    # scaled the other weights to share what is left, keeping their proportions
     for k in others:
-        w[k] = round(w[k] * rest / cur) if cur else round(rest / len(others))
-        acc += w[k]
-        if acc != 100:
-            big = max(others, key=lambda k: w[k])
-            w[big] = max(0, w[big] + 100 - acc)
-        return w
+        if cur > 0:
+            w[k] = round(w[k] * rest / cur)
+        else:
+            w[k] = round(rest / len(others))
 
-
-
-
- 
+    # fixed rounding error by adding/removing the difference on the largest other weight
+    total = sum(w.values())
+    if total != 100:
+        big = max(others, key=lambda k: w[k])
+        w[big] = max(0, w[big] + 100 - total)
+    return w
