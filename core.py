@@ -76,7 +76,9 @@ class Store:
             setattr(self.state, k, v)
         for fn in self.listeners: fn(self.state)
     def pick_school(self, idx):
-        if idx not in self.state.pair: self.update(pair=[self.state.pair[1], idx])
+        p = list(self.state.pair)
+        if idx not in p:
+            self.update(pair=(p + [idx])[-2:])
 
 #SAT/ACT CONVERSION TABLE
 _CT = [(770,16),(830,17),(880,18),(920,19),(960,20),(1000,21),(1040,22),(1080,23),(1120,24),(1160,25),(1200,26),
@@ -121,8 +123,15 @@ def compute(schools, state):
     return rows
 
 def fix_pair(rows, pair):
+    # Keep each compared school that is still selected in its same slot (A or B),
+    # then fill any empty slot with the highest ranked school not already in the pair
     ids = [r.idx for r in rows]
-    return pair if not ids or all(p in ids for p in pair) else [ids[min(1, len(ids) - 1)], ids[-1]]
+    slots = [p if p in ids else None for p in (list(pair) + [None, None])[:2]]
+    if slots[0] is not None and slots[0] == slots[1]:
+        slots[1] = None
+    free = [i for i in ids if i not in slots]
+    slots = [s if s is not None else (free.pop(0) if free else None) for s in slots]
+    return [s for s in slots if s is not None]
 
 def rebalance_weights(w, key, v):
     # clamped the moved weight to 0-100 and copied the dict so the old state is not changed
