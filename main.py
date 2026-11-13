@@ -11,6 +11,7 @@ from collegeComparison import CollegeComparison
 # Ex. (CostEarnings, 'cost_earnings')
 SECTIONS = [(ProfileMenu, 'profile'), (CollegeComparison, 'head_to_head'), (CostEarnings, 'cost_earnings')]
 
+
 def make_slots(fig):
     outer = GridSpec(1, 2, figure=fig, width_ratios=[1,5], wspace=.08, left=.02, right=.99, top=.96, bottom=.11)
     main = outer[1].subgridspec(3, 1, height_ratios=[.6, 2.3, 2.9], hspace=.35)
