@@ -4,9 +4,10 @@ from matplotlib.gridspec import GridSpec
 from core import (State, Store, load_schools, default_selection, compute, fix_pair, DEFAULT_CSV, money)
 #from cost_earnings import CostEarnings <- Ex
 from filterMenu import ProfileMenu
+from collegeComparison import CollegeComparison
 # ---- ADD SECTIONS HERE (one import + one line each). Slots: profile, metrics, ranking, cost_earnings, head_to_head, score_lands
 # Ex. (CostEarnings, 'cost_earnings')
-SECTIONS = [(ProfileMenu, 'profile')]
+SECTIONS = [(ProfileMenu, 'profile'), (CollegeComparison, 'head_to_head')]
 
 def make_slots(fig):
     outer = GridSpec(1, 2, figure=fig, width_ratios=[1,5], wspace=.08, left=.02, right=.99, top=.96, bottom=.11)
