@@ -116,7 +116,7 @@ def compute(schools, state):
         miss = not s[state.major]
         fit = sum(state.weights[k] * c[k] / 100 for k in state.weights) * (0.92 if miss else 1)
         rows.append(Row(i, s, t, state.st == s['st'], p, lab, int(math.floor(fit +.5)), miss, size_index(s["sz"])))
-    rows.sort(key=lambda r: (-r.fit))
+    rows.sort(key=lambda r: (-r.fit, -r.s['earn'] / r.tuition, r.s['ab'].lower()))
     for k, r in enumerate(rows): r.rank = k + 1
     return rows
 
@@ -148,3 +148,4 @@ def rebalance_weights(w, key, v):
         big = max(others, key=lambda k: w[k])
         w[big] = max(0, w[big] + 100 - total)
     return w
+
