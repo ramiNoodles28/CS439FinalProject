@@ -19,8 +19,8 @@ def make_slots(fig):
 
 def build_app(csv=DEFAULT_CSV, **overrides):
     schools = load_schools(csv)
-    sel = default_selection(schools)
-    state = State(selected=sel, pair=[sel[0], sel[3]], **overrides)      # default pair: 
+    # started with zero schools, the user adds them with the search box in the profile menu
+    state = State(selected=[], pair=[], **overrides)
     store = Store(state)
     fig = plt.figure(figsize=(17, 9.5)); slots = make_slots(fig)
     sections = []

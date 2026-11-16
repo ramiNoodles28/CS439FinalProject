@@ -59,11 +59,14 @@ def default_selection(schools):
 @dataclass
 class State:
     st: str = "IN"                    # in/out of state
-    major: str = "c11"                # default to cs
+    major: str = "c11"                # default to cs, "any" = no major preference
     sat: int = 1420                   # default SAT score
+    act: int = 32                     # default ACT score (about the same as a 1420 SAT)
+    use_sat: bool = True              # SAT box checked in the profile menu
+    use_act: bool = False             # ACT box checked in the profile menu
     budget: int = 35000               # default tuition bidget
-    pref_size: int = 3                # 0 Small 1 medium, 2 large3 Very large
-    weights: dict = field(default_factory=lambda: {"aff": 20, "earn": 20, "grad": 20, "adm": 20, "size": 20})
+    pref_size: int = 3                # 0 Small 1 medium, 2 large3 Very large, None = any size
+    weights: dict = field(default_factory=lambda: {"aff": 50, "earn": 50, "grad": 50, "adm": 50, "size": 50})  # each 0-100
     selected: list = field(default_factory=list)   # selected schools short list
     pair: list = field(default_factory=list)       # 2 selected schools comparison
     scatter_mode: str = "auto"        # cost earnings chart
@@ -95,14 +98,37 @@ def sat_to_act(sat):
         if sat <= c: return b + (d - b) * (sat - a) / (c - a)
     return 36
 
+def act_to_sat(act):
+    # converted an ACT score to an SAT score with the same table, going the other way
+    if act <= _CT[0][1]:
+        return _CT[0][0]
+    for (a, b), (c, d) in zip(_CT, _CT[1:]):
+        if act <= d:
+            return a + (c - a) * (act - b) / (d - b)
+    return 1600
+
+def test_sat(state):
+    # created variable for the student's test score as an SAT number, using the better of SAT/ACT if both are checked
+    # returns None if neither test is checked (test-optional)
+    scores = []
+    if state.use_sat:
+        scores.append(state.sat)
+    if state.use_act:
+        scores.append(act_to_sat(state.act))
+    if len(scores) == 0:
+        return None
+    return max(scores)
+
 def size_index(sz): return sum(sz >= c for c in SIZE_CUTS)
 def _clamp01(x): return max(0.0, min(1.0, x))
 def tuition_for(s, st): return s['tin'] if st == s['st'] else s['tout']
 
 
 def chance(s, sat):
+    # sat can be None when no test score is given, then the chance only uses the admit rate
     a = min(.98, max(.02, s['adm'] / 100))
-    p = 1 / (1 + math.exp(-((sat - s['sat']) / 70 + .8 * math.log(a / (1 - a)))))
+    score_part = 0 if sat is None else (sat - s['sat']) / 70
+    p = 1 / (1 + math.exp(-(score_part + .8 * math.log(a / (1 - a)))))
     return p, ('Likely' if p >= .75 else 'Target' if p >= .3 else 'Reach')
 
 def compute(schools, state):
@@ -111,12 +137,28 @@ def compute(schools, state):
         s = schools.iloc[i]
         t = tuition_for(s, state.st)
         B = state.budget or 1
-        p, lab = chance(s, state.sat)
+        p, lab = chance(s, test_sat(state))
         c = {"aff": 100 - 30 * t / B if t <= B else max(0, 70 * (1 - (t - B) / B)),
              "earn": 100 * _clamp01((s["earn"] - 35000) / 65000), "grad": 100 * _clamp01((s["gr"] - 40) / 58),
-             "adm": p * 100, "size": 100 - 35 * abs(size_index(s["sz"]) - state.pref_size)} 
-        miss = not s[state.major]
-        fit = sum(state.weights[k] * c[k] / 100 for k in state.weights) * (0.92 if miss else 1)
+             "adm": p * 100}
+
+        # left size out of the fit when the user picked "Any" size
+        if state.pref_size is not None:
+            c["size"] = 100 - 35 * abs(size_index(s["sz"]) - state.pref_size)
+
+        # only took off points for a missing major when a major was picked
+        if state.major == "any":
+            miss = False
+        else:
+            miss = not s[state.major]
+
+        # each weight is 0-100 on its own, so I divided by their total to keep fit on a 0-100 scale
+        total_w = sum(state.weights[k] for k in c)
+        if total_w > 0:
+            fit = sum(state.weights[k] * c[k] for k in c) / total_w
+        else:
+            fit = sum(c.values()) / len(c)
+        fit = fit * (0.92 if miss else 1)
         rows.append(Row(i, s, t, state.st == s['st'], p, lab, int(math.floor(fit +.5)), miss, size_index(s["sz"])))
     rows.sort(key=lambda r: (-r.fit, -r.s['earn'] / r.tuition, r.s['ab'].lower()))
     for k, r in enumerate(rows): r.rank = k + 1
