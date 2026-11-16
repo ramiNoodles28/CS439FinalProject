@@ -6,9 +6,10 @@ from cost_earnings import CostEarnings
 from filterMenu import ProfileMenu
 from collegeComparison import CollegeComparison
 from metrics import MetricCards
+from ranking_list_bars import RankingBars
 # ---- ADD SECTIONS HERE (one import + one line each). Slots: profile, metrics, ranking, cost_earnings, head_to_head, score_lands
 # Ex. (CostEarnings, 'cost_earnings')
-SECTIONS = [(ProfileMenu, 'profile'), (CollegeComparison, 'head_to_head'), (CostEarnings, 'cost_earnings'), (MetricCards, 'metrics')]
+SECTIONS = [(ProfileMenu, 'profile'), (RankingBars, 'ranking'), (CollegeComparison, 'head_to_head'), (CostEarnings, 'cost_earnings'), (MetricCards, 'metrics')]
 
 def make_slots(fig):
     outer = GridSpec(1, 2, figure=fig, width_ratios=[1,5], wspace=.08, left=.02, right=.99, top=.96, bottom=.11)

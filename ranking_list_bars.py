@@ -89,14 +89,30 @@ def _text_width_points(text, fontsize, bold=True):
     return px / _REF_DPI * 72.0
 
 
-def _data_units_per_point(ax):
-    """Data units per point along the x-axis, computed from physical inches
-    (dpi-independent). For this layout the data spans the full figure width,
-    and fig_width scales with total_width, so this reduces to a constant."""
+def _axes_drawn_width_in(ax):
+    """Width (inches) of the region the axes actually draws into, accounting for
+    equal-aspect letterboxing. Keyed to the axes -- not the whole figure -- so
+    it is correct both standalone and when embedded in a slot of a larger figure."""
     fig = ax.figure
+    pos = ax.get_position(fig)
+    Wp = pos.width * fig.get_figwidth()
+    Hp = pos.height * fig.get_figheight()
+    if ax.get_aspect() == "equal":
+        try:
+            A = (ax.get_xlim()[1] - ax.get_xlim()[0]) / max((ax.get_ylim()[1] - ax.get_ylim()[0]), 1e-9)
+            return min(Wp, Hp * A)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return Wp
+    return Wp
+
+
+def _data_units_per_point(ax):
+    """Data units per point along the x-axis, computed from the actual drawn
+    axes width in inches (dpi-independent), so text measurement is correct both
+    standalone and when embedded in a slot of a larger figure."""
     total = ax.get_xlim()[1] - ax.get_xlim()[0]
-    fig_w_in = fig.get_figwidth()
-    return total / (fig_w_in * 72.0)
+    ax_w_in = _axes_drawn_width_in(ax)
+    return total / (ax_w_in * 72.0)
 
 
 def _text_fits_in_bar(ax, label_str, bar_width, fontsize=8.5, padding=0.55):
@@ -194,6 +210,7 @@ def _setup_bar_tooltips(fig, ax, bounds_ref, fpt=None):
         bounds_ref["key"] = idx
 
     fig.canvas.mpl_connect("motion_notify_event", on_motion)
+    return on_motion
 
 
 def _draw_capsule(ax, x, y, width, height, color, zorder=3):
@@ -370,6 +387,7 @@ def create_ranking_list_figure(
     dpi=200,
     save_path=None,
     layout="compact",
+    ax=None,
 ):
     """
     Creates a Matplotlib figure displaying a vertical list of N horizontal bar items,
@@ -457,9 +475,21 @@ def create_ranking_list_figure(
     # with side padding if the row list's own aspect is narrower than 16:4).
     fig_height = fig_width / FIG_RATIO
 
-    fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=dpi)
-    fig.patch.set_facecolor("#FFFFFF")
-    ax.set_facecolor("#FFFFFF")
+    owns_figure = ax is None
+    if owns_figure:
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height), dpi=dpi)
+        fig.patch.set_facecolor("#FFFFFF")
+        ax.set_facecolor("#FFFFFF")
+    else:
+        fig = ax.figure
+        # Drop handlers a previous render attached to this same axes so
+        # re-rendering (dashboard state changes) doesn't stack motion/pick/resize
+        # callbacks on the shared canvas.
+        for _cb in getattr(ax, "_rlb_cids", {}).values():
+            try:
+                fig.canvas.mpl_disconnect(_cb)
+            except (ValueError, AttributeError):
+                pass
 
     ax.set_xlim(0, total_width)
     ax.set_ylim(-0.5, total_height + 0.5)
@@ -623,7 +653,8 @@ def create_ranking_list_figure(
         fig_height = fig_width / FIG_RATIO
     else:
         fig_height = fig_width * (total_height + 2.0 * ymargin) / total_width
-    fig.set_size_inches(fig_width, fig_height)
+    if owns_figure:
+        fig.set_size_inches(fig_width, fig_height)
     ax.set_xlim(0, total_width)
     ax.set_ylim(-ymargin, total_height + ymargin)
 
@@ -653,7 +684,11 @@ def create_ranking_list_figure(
     DESIGN_W = max(fig_width, 1e-6)
 
     def fpt(base):
-        return base * (ax.figure.get_figwidth() / DESIGN_W)
+        # Scale fonts to the *actual drawn axes width*, not the whole figure, so
+        # the text-to-box ratio matches the design whether the panel is standalone
+        # or embedded in a slot (and keeps scaling correctly on window resize).
+        ax_w_in = _axes_drawn_width_in(ax)
+        return base * (ax_w_in / DESIGN_W)
 
     def draw_scene():
         ax.clear()
@@ -871,8 +906,9 @@ def create_ranking_list_figure(
         draw_scene()
 
     # Wire the (single, persistent) hover-tooltip + click handlers, then render.
-    plt.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
-    _setup_bar_tooltips(fig, ax, tip_holder, fpt)
+    if owns_figure:
+        plt.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
+    _rlb_motion = _setup_bar_tooltips(fig, ax, tip_holder, fpt)
     # Header labels are pickable; matplotlib reports a clicked pickable artist
     # via the `pick_event` signal (the button-press event itself does not
     # carry `artist` in modern matplotlib), so we listen for pick events.
@@ -885,6 +921,10 @@ def create_ranking_list_figure(
 
     fig.canvas.mpl_connect("resize_event", _on_resize)
 
+    # Remember the handlers attached this pass so a later render into the same
+    # axes can disconnect them first (prevents stacking on the shared canvas).
+    ax._rlb_cids = {"motion": _rlb_motion, "pick": on_click, "resize": _on_resize}
+
     draw_scene()
 
     if save_path:
@@ -893,3 +933,72 @@ def create_ranking_list_figure(
         fig.savefig(save_path, dpi=dpi)
 
     return fig, ax
+
+
+# ---------------------------------------------------------------------------
+# Dashboard section: renders the ranking list into a main.py slot
+# ---------------------------------------------------------------------------
+
+_CHANCE_TO_CATEGORY = {"Likely": "Safety", "Target": "Target", "Reach": "Reach"}
+
+
+def build_ranking_items(rows):
+    """Turn core.compute() rows into items for the ranking list.
+
+    Fit scores and feasibility come straight from core; the 5 metric
+    (normalized, raw) pairs come from ranking_core.
+    """
+    from ranking_core import create_school_metrics
+
+    items = []
+    for r in rows:
+        items.append({
+            "name": r.s["ab"],
+            "residency": "In-state" if r.resident else "Out-of-state",
+            "metrics": create_school_metrics(r.idx, r.resident),
+            "category": _CHANCE_TO_CATEGORY.get(r.chance, "Target"),
+            "fit_score": r.fit,
+            "active": True,
+        })
+    return items
+
+
+class RankingBars:
+    """Dashboard section for the 'ranking' slot.
+
+    Renders the full interactive ranking list (per-segment value labels, hover
+    tooltips for small segments, click-to-sort on each metric + Fit Score,
+    locked 4:1 layout) by delegating to create_ranking_list_figure with
+    ax=provided. Fit scores and feasibility come from core.compute(); the 5
+    metric (normalized, raw) pairs come from ranking_core.
+    """
+
+    def __init__(self, store, schools):
+        self.store = store
+        self.schools = schools
+
+    def build(self, fig, spec):
+        # Left-align the panel: place a 4:1 axes anchored at the slot's left
+        # edge (capped to the slot) so the list fills it and sits flush-left
+        # instead of being centered by matplotlib's equal-aspect letterboxing.
+        pos = spec.get_position(fig)
+        figw = fig.get_figwidth()
+        figh = fig.get_figheight()
+        slot_w = pos.width * figw
+        slot_h = pos.height * figh
+        box_w = min(slot_w, slot_h * 4.0)  # 4:1, capped by the slot
+        self.ax = fig.add_axes([pos.x0, pos.y0, box_w / figw, slot_h / figh])
+        self.ax.axis("off")
+
+    def render(self, rows, state):
+        items = build_ranking_items(rows)
+        if not items:
+            self.ax.clear()
+            self.ax.axis("off")
+            self.ax.text(0.5, 0.5, "No schools selected", ha="center", va="center",
+                         color="#6b7487", transform=self.ax.transAxes)
+            return
+        create_ranking_list_figure(
+            items, ax=self.ax, scale_mode="relative", show_headers=True,
+            layout="compact",
+        )
