@@ -3,13 +3,8 @@ from matplotlib.patches import Rectangle
 from matplotlib.patches import Rectangle, FancyBboxPatch
 
 # Colors and helper functions shared with the rest of the dashboard
-from core import TEXT, GRID, CHANCE_COLOR, SIZE_LABELS
+from core import A_COLOR, B_COLOR, TEXT, GRID, CHANCE_COLOR, SIZE_LABELS
 from core import money, pct, tuition_for, chance, size_index
-
-# Head to head colors, school A is blue and school B is orange
-# Set here instead of core so the other sections keep their own colors
-A_COLOR = "#2563eb"
-B_COLOR = "#f97316"
 
 # Comparison rows: label, column in schools, formatting, higher vals, scale low, scale high
 # Each tuple becomes one row of bars, higher vals = True means bigger number wins

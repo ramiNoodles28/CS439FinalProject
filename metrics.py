@@ -28,8 +28,6 @@ class MetricCards:
         subgrid = spec.subgridspec(2, 1, height_ratios=[.5, .95], hspace=.12)
         self.head = fig.add_subplot(subgrid[0, 0])
         self.head.axis("off")
-        self.head.text(0, .95, TITLE, fontsize=19, fontweight="bold", color=TEXT, ha="left", va="top", transform=self.head.transAxes)
-        self.head.text(0, .2, SUBTITLE, fontsize=9, color=MUTED, ha="left", va="center", transform=self.head.transAxes)
         cards = subgrid[1, 0].subgridspec(1, len(CARDS), wspace=.08)
         self.axes = []
         for k in range(len(CARDS)):
@@ -45,7 +43,8 @@ class MetricCards:
             ax.set_xlim(0, 1)
             ax.set_ylim(0, 1)
             ax.add_patch(Rectangle((.003, .01), .994, .98, facecolor="white", edgecolor=GRID, linewidth=1, clip_on=False))
-            ax.add_patch(Rectangle((.003, .01), .012, .98, facecolor=color, edgecolor="none"))
+            # skinny colored strip along the top edge of the card
+            ax.add_patch(Rectangle((.003, .95), .994, .04, facecolor=color, edgecolor="none", clip_on=False))
             ax.text(.06, .8, label, fontsize=8, fontweight="bold", color=color, ha="left", va="center")
             if row is None:
                 ax.text(.06, .45, "—", fontsize=15, fontweight="bold", color=MUTED, ha="left", va="center")
