@@ -6,6 +6,7 @@ ABOVE = ("Above range", LIKELY)
 INSIDE = ("In range", TARGET)
 BELOW = ("Below range", REACH)
 
+
 class ScorePercentile:
     # store holds the current state (SAT/ACT, selected schools), schools is the dataframe from load_schools
     def __init__(self, store, schools):
@@ -15,14 +16,13 @@ class ScorePercentile:
     # Called once by main.py, spec is the slot for this section
     # Left axis draws the 25th-75th percentile bars, right axis holds the status text
     def build(self, fig, spec):
-        subgrid = spec.subgridspec(1, 2, width_ratios=[3, 1.15], wspace=.02)
-        self.ax = fig.add_subplot(subgrid[0, 0])
-        self.txt = fig.add_subplot(subgrid[0, 1])
+        # Top row is left empty so the title and "You" label sit lower, clear of the chart above
+        subgrid = spec.subgridspec(2, 2, height_ratios=[.16, 1], width_ratios=[3, 1.15], wspace=.02, hspace=0)
+        self.ax = fig.add_subplot(subgrid[1, 0])
+        self.txt = fig.add_subplot(subgrid[1, 1])
         self.txt.axis("off")
 
     # Decide which scale to draw on and what score to draw the line at
-    # ACT scale only when ACT is the only test checked, otherwise SAT
-    # Both checked -> better of the two (same rule the chance calculation uses)
     def score_setup(self, state):
         if state.use_act and not state.use_sat:
             return "ACT", state.act
@@ -51,7 +51,7 @@ class ScorePercentile:
         ax.clear()
         txt.clear()
         txt.axis("off")
-        ax.set_title("Where Your Score Lands", loc="left", fontsize=10, fontweight="bold", color=TEXT)
+        ax.set_title("Where Your Score Lands", loc="left", fontsize=10, fontweight="bold", color=TEXT, pad=16)
 
         scale, score = self.score_setup(state)
 
@@ -67,33 +67,29 @@ class ScorePercentile:
         n = len(rows)
         fs = 7 if n <= 12 else 6   # smaller text when a lot of schools are selected
 
-        # x limits, include the student's score so the line is always visible
-        lows = [lo for lo, _ in ranges] + [score]
-        highs = [hi for _, hi in ranges] + [score]
+        # x axis is always the full score range of the test
         if scale == "SAT":
-            pad, cap_lo, cap_hi = 40, 400, 1600
+            xmin, xmax, ticks = 400, 1600, range(400, 1601, 200)
         else:
-            pad, cap_lo, cap_hi = 1, 1, 36
-        xmin = max(cap_lo, min(lows) - pad)
-        xmax = min(cap_hi, max(highs) + pad)
+            xmin, xmax, ticks = 1, 36, range(5, 36, 5)
         ax.set_xlim(xmin, xmax)
+        ax.set_xticks(list(ticks))
         ax.set_ylim(n - .5, -.5)   # flipped so rank 1 is on top
         txt.set_xlim(0, 1)
         txt.set_ylim(n - .5, -.5)
 
         a_id, b_id = (list(state.pair) + [None, None])[:2]
         for i, (r, (lo, hi)) in enumerate(zip(rows, ranges)):
-            (label, color), diff = self.status(score, lo, hi)
+            (label, color), _ = self.status(score, lo, hi)
             fmt = "{:.0f}" if scale == "SAT" else "{:.0f}"
 
             # 25th-75th percentile bar, colored by where the student lands
             ax.barh(i, hi - lo, left=lo, height=.5, color=color, alpha=.45, zorder=2)
-            ax.text(lo - (xmax - xmin) * .01, i, fmt.format(lo), ha="right", va="center", fontsize=fs - 1, color=MUTED)
-            ax.text(hi + (xmax - xmin) * .01, i, fmt.format(hi), ha="left", va="center", fontsize=fs - 1, color=MUTED)
+            ax.text(lo - (xmax - xmin) * .01, i, fmt.format(lo), ha="right", va="center", fontsize=5, color=MUTED)
+            ax.text(hi + (xmax - xmin) * .01, i, fmt.format(hi), ha="left", va="center", fontsize=5, color=MUTED)
 
-            # Status text on the right, with how far outside the range when not in it
-            extra = f" ({diff:+.0f})" if diff else ""
-            txt.text(0.02, i, label + extra, ha="left", va="center", fontsize=fs, fontweight="bold", color=color)
+            # Status text on the right
+            txt.text(0.02, i, label, ha="left", va="center", fontsize=fs, fontweight="bold", color=color)
 
         # Vertical line for the student's score
         ax.axvline(score, color=TEXT, lw=1.5, ls="--", zorder=4)
@@ -126,10 +122,6 @@ class ScorePercentile:
 
 
 # Run this file by itself to see just this chart, using the default shortlist from core.py
-#   python scorePercentile.py                  -> default SAT (1420)
-#   python scorePercentile.py --sat 1300
-#   python scorePercentile.py --act 28         -> ACT scale (turns SAT off)
-#   python scorePercentile.py --sat 1350 --act 30   -> both checked, uses the better one
 if __name__ == "__main__":
     import argparse
     import matplotlib.pyplot as plt
@@ -144,9 +136,8 @@ if __name__ == "__main__":
     a = ap.parse_args()
 
     schools = load_schools(a.csv)
-    sel = default_selection(schools)   # the same default shortlist main.py's --check uses
+    sel = default_selection(schools)
 
-    # --act alone means ACT only, --sat alone means SAT only, both means both, neither means default SAT
     use_act = a.act is not None
     use_sat = a.sat is not None or not use_act
     state = State(st=a.st, selected=sel, pair=[sel[0], sel[3]], use_sat=use_sat, use_act=use_act)

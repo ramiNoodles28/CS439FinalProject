@@ -15,13 +15,13 @@ SECTIONS = [(ProfileMenu, 'profile'), (RankingBars, 'ranking'), (CollegeComparis
 def make_slots(fig):
     outer = GridSpec(1, 2, figure=fig, width_ratios=[1,5], wspace=.08, left=.02, right=.99, top=.96, bottom=.11)
     main = outer[1].subgridspec(3, 1, height_ratios=[1.5, 2.8, 3.2], hspace=.08)
-    bottom = main[2].subgridspec(1, 3, width_ratios=[1, 1, .65], wspace=.08)
+    bottom = main[2].subgridspec(1, 3, width_ratios=[.7, .85, 0.5], wspace=.25)
     return {"profile": outer[0], "metrics": main[0], "ranking": main[1], "cost_earnings": bottom[0], "head_to_head": bottom[1], "score_lands": bottom[2]}
 
-def build_app(csv=DEFAULT_CSV, **overrides):
+def build_app(csv=DEFAULT_CSV, shortlist=True, **overrides):
     schools = load_schools(csv)
-    # started with zero schools, the user adds them with the search box in the profile menu
-    state = State(selected=[], pair=[], **overrides)
+    sel = default_selection(schools) if shortlist else []
+    state = State(selected=sel, pair=[], **overrides)
     store = Store(state)
     fig = plt.figure(figsize=(17, 9.5)); slots = make_slots(fig)
     sections = []
