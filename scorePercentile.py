@@ -1,6 +1,7 @@
+from matplotlib.patches import FancyBboxPatch
+from matplotlib.lines import Line2D
 from core import LIKELY, TARGET, REACH, A_COLOR, B_COLOR, TEXT, MUTED, GRID
 from core import act_to_sat, test_sat
-from matplotlib.patches import FancyBboxPatch
 
 # Status shown on the right of each school, (label, color)
 ABOVE = ("Above range", LIKELY)
@@ -15,15 +16,15 @@ class ScorePercentile:
         self.schools = schools
 
     # Called once by main.py, spec is the slot for this section
-    # Left axis draws the 25th-75th percentile bars, right axis holds the status text
+    # One axis draws the 25th-75th percentile bars, a legend below explains the bar colors
     def build(self, fig, spec):
         # Top row is left empty so the title and "You" label sit lower, clear of the chart above
-        subgrid = spec.subgridspec(2, 2, height_ratios=[.16, 1], width_ratios=[3, 1.15], wspace=.02, hspace=0)
+        subgrid = spec.subgridspec(2, 1, height_ratios=[.16, 1], hspace=0)
         self.ax = fig.add_subplot(subgrid[1, 0])
-        self.txt = fig.add_subplot(subgrid[1, 1])
-        self.txt.axis("off")
 
     # Decide which scale to draw on and what score to draw the line at
+    # ACT scale only when ACT is the only test checked, otherwise SAT
+    # Both checked -> better of the two (same rule the chance calculation uses)
     def score_setup(self, state):
         if state.use_act and not state.use_sat:
             return "ACT", state.act
@@ -48,10 +49,8 @@ class ScorePercentile:
 
     # Called by main.py every time the state changes
     def render(self, rows, state):
-        ax, txt = self.ax, self.txt
+        ax = self.ax
         ax.clear()
-        txt.clear()
-        txt.axis("off")
         ax.set_title("Where Your Score Lands", loc="left", fontsize=10, fontweight="bold", color=TEXT, pad=16)
 
         scale, score = self.score_setup(state)
@@ -76,34 +75,31 @@ class ScorePercentile:
         ax.set_xlim(xmin, xmax)
         ax.set_xticks(list(ticks))
         ax.set_ylim(n - .5, -.5)   # flipped so rank 1 is on top
-        txt.set_xlim(0, 1)
-        txt.set_ylim(n - .5, -.5)
 
-        a_id, b_id = (list(state.pair) + [None, None])[:2]
-
-        bar_h = .5   # bar thickness
+        bar_h = .5   # bar thickness in y units (same value barh used as height=.5)
+        # The x axis spans ~1200 units but the y axis only a handful, so a plain rounded
+        # box would come out squashed. mutation_aspect corrects for the difference.
         bbox = ax.get_window_extent()
         px_x = bbox.width / (xmax - xmin)    # pixels per x unit
         px_y = bbox.height / n               # pixels per y unit
         aspect = px_x / px_y
         radius_x = (bar_h / 2) / aspect      # corner radius in x units that gives a full semicircle end
 
+        a_id, b_id = (list(state.pair) + [None, None])[:2]
         for i, (r, (lo, hi)) in enumerate(zip(rows, ranges)):
             (label, color), _ = self.status(score, lo, hi)
             fmt = "{:.0f}" if scale == "SAT" else "{:.0f}"
 
             # 25th-75th percentile bar, colored by where the student lands
             w = hi - lo
-            rad = min(radius_x, w / 2)
+            rad = min(radius_x, w / 2)           # don't let the corners exceed half the bar's width
             ax.add_patch(FancyBboxPatch((lo, i - bar_h / 2), w, bar_h,
                                         boxstyle=f"round,pad=0,rounding_size={rad}",
                                         mutation_aspect=aspect,
-                                        facecolor=color, edgecolor="none", alpha=.45, zorder=2))
+                                        facecolor=color, edgecolor="none", alpha=.85, zorder=2))
             ax.text(lo - (xmax - xmin) * .01, i, fmt.format(lo), ha="right", va="center", fontsize=5, color=MUTED)
             ax.text(hi + (xmax - xmin) * .01, i, fmt.format(hi), ha="left", va="center", fontsize=5, color=MUTED)
 
-            # Status text on the right
-            txt.text(0.02, i, label, ha="left", va="center", fontsize=fs, fontweight="bold", color=color)
 
         # Vertical line for the student's score
         ax.axvline(score, color=TEXT, lw=1.5, ls="--", zorder=4)
@@ -123,6 +119,12 @@ class ScorePercentile:
             else:
                 lbl.set_color(TEXT)
 
+        # Legend at the bottom explaining the bar colors
+        handles = [Line2D([], [], marker="o", ls="", color=c, markersize=7, label=l) for l, c in (
+            ("Above range", LIKELY), ("In range", TARGET), ("Below range", REACH))]
+        ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(.5, -.10), ncol=3,
+                frameon=False, fontsize=7, handletextpad=.3, columnspacing=1.4)
+
         for sp in ("top", "right", "left"):
             ax.spines[sp].set_visible(False)
         ax.tick_params(axis="y", length=0)
@@ -136,6 +138,10 @@ class ScorePercentile:
 
 
 # Run this file by itself to see just this chart, using the default shortlist from core.py
+#   python scorePercentile.py                  -> default SAT (1420)
+#   python scorePercentile.py --sat 1300
+#   python scorePercentile.py --act 28         -> ACT scale (turns SAT off)
+#   python scorePercentile.py --sat 1350 --act 30   -> both checked, uses the better one
 if __name__ == "__main__":
     import argparse
     import matplotlib.pyplot as plt
@@ -150,8 +156,9 @@ if __name__ == "__main__":
     a = ap.parse_args()
 
     schools = load_schools(a.csv)
-    sel = default_selection(schools)
+    sel = default_selection(schools)   # the same default shortlist main.py's --check uses
 
+    # --act alone means ACT only, --sat alone means SAT only, both means both, neither means default SAT
     use_act = a.act is not None
     use_sat = a.sat is not None or not use_act
     state = State(st=a.st, selected=sel, pair=[sel[0], sel[3]], use_sat=use_sat, use_act=use_act)
@@ -161,7 +168,7 @@ if __name__ == "__main__":
         state.act = a.act
 
     fig = plt.figure(figsize=(6.5, 5))
-    spec = GridSpec(1, 1, figure=fig, left=.2, right=.97, top=.9, bottom=.12)[0]
+    spec = GridSpec(1, 1, figure=fig, left=.2, right=.97, top=.9, bottom=.2)[0]
     chart = ScorePercentile(Store(state), schools)
     chart.build(fig, spec)
 
