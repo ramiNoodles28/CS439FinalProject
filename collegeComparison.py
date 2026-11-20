@@ -3,10 +3,15 @@ from matplotlib.patches import Rectangle
 from matplotlib.patches import Rectangle, FancyBboxPatch
 
 # Colors and helper functions shared with the rest of the dashboard
-from core import A_COLOR, B_COLOR, TEXT, GRID, CHANCE_COLOR, SIZE_LABELS
+from core import TEXT, GRID, CHANCE_COLOR, SIZE_LABELS
 from core import money, pct, tuition_for, chance, size_index
 
-# Comparison rows - label, column in schools, formatting, higher vals, scale low, scale high
+# Head to head colors, school A is blue and school B is orange
+# Set here instead of core so the other sections keep their own colors
+A_COLOR = "#2563eb"
+B_COLOR = "#f97316"
+
+# Comparison rows: label, column in schools, formatting, higher vals, scale low, scale high
 # Each tuple becomes one row of bars, higher vals = True means bigger number wins
 # Scale low/high is the range a full bar covers, picked to fit each metric:
 #   tuition: $0 to $75K (most expensive school in the data)
@@ -54,6 +59,26 @@ class CollegeComparison:
         self.banner = fig.add_subplot(subgrid[2, 0])
         self.banner.axis("off")
 
+        # Clicking a school name box picks which side the next ranking click replaces
+        fig.canvas.mpl_connect("button_press_event", self.on_click)
+
+    # Click on the blue box picks side A, click on the orange box picks side B
+    # The picked side gets an outline, then clicking a school in the ranking puts it there
+    def on_click(self, event):
+        # Only clicks in the header, and only when two schools are showing
+        if event.inaxes is not self.head or event.button != 1:
+            return
+        if len(self.store.state.pair) < 2:
+            return
+
+        # Left of the middle is A, right of the middle is B (x goes -1 to 1)
+        if event.xdata < 0:
+            side = 0
+        else:
+            side = 1
+        if side != self.store.state.pair_target:
+            self.store.update(pair_target=side)
+
     # Get the value for one metric
     # Tuition is different since it depends on home state
     def get_value(self, school, column, state):
@@ -95,10 +120,9 @@ class CollegeComparison:
         self.ax.axis("off")
         self.banner.axis("off")
 
-        # Need two schools to compare
+        # Need two schools to compare, show the empty skeleton until there are two
         if len(state.pair) < 2 or None in state.pair:
-            self.ax.text(0.5, 0.5, "Pick two schools", ha="center", va="center", color=TEXT,
-                         transform=self.ax.transAxes)
+            self.draw_skeleton()
             return
 
         # Get the row of data for each school
@@ -106,12 +130,62 @@ class CollegeComparison:
         school_b = self.schools.loc[state.pair[1]]
 
         # Draw each part, draw_bars gives back how many metrics each school won
-        self.draw_header(school_a, school_b)
+        self.draw_header(school_a, school_b, state.pair_target)
         wins = self.draw_bars(school_a, school_b, state)
         self.draw_bottom(school_a, school_b, wins, state)
 
-    # Title and a colored box for each school
-    def draw_header(self, school_a, school_b):
+    # Empty version of the section, same layout as a real comparison but with no schools
+    # Grey boxes, empty tracks, and dashes so the user can see what will show up
+    def draw_skeleton(self):
+        head = self.head
+        ax = self.ax
+        bottom = self.banner
+
+        # Header, two grey boxes in the same spots as the school name boxes
+        head.set_xlim(-1, 1)
+        head.set_ylim(0, 1)
+        head.text(0, 1.15, "HEAD-TO-HEAD", ha="center", va="center", fontsize=8, fontweight="bold", color=TEXT)
+        width = 1 - GAP
+        head.add_patch(Rectangle((-1, 0.1), width, 0.8, facecolor=GRID, edgecolor='none'))
+        head.add_patch(Rectangle((GAP, 0.1), width, 0.8, facecolor=GRID, edgecolor='none'))
+        head.text(-1 + 0.04, 0.5, "Select a school", ha='left', va='center', fontsize=9, color=TEXT, alpha=0.5)
+        head.text(GAP + width - 0.04, 0.5, "Select a school", ha='right', va='center', fontsize=9, color=TEXT,
+                  alpha=0.5)
+
+        # Bars, same sizes as draw_bars but only the empty tracks
+        ax.set_xlim(-1, 1)
+        ax.set_ylim(len(METRICS)-0.5, -0.5)
+        span = .62
+        bar_h = 0.4
+        box = ax.get_window_extent()
+        aspect = (len(METRICS) / box.height) / (2 / box.width)
+        radius = bar_h / 2 / aspect
+
+        for i in range(len(METRICS)):
+            label = METRICS[i][0]
+            ax.add_patch(FancyBboxPatch((-GAP - span, i + 0.12 - bar_h / 2), span, bar_h,
+                                        boxstyle=f"round,pad=0,rounding_size={radius}", mutation_aspect=aspect,
+                                        facecolor=GRID, edgecolor='none', alpha=0.6))
+            ax.add_patch(FancyBboxPatch((GAP, i + 0.12 - bar_h / 2), span, bar_h,
+                                        boxstyle=f"round,pad=0,rounding_size={radius}", mutation_aspect=aspect,
+                                        facecolor=GRID, edgecolor='none', alpha=0.6))
+            ax.text(0, i - 0.26, label, ha='center', va='center', fontsize=7, fontweight='bold', color=TEXT)
+            ax.text(-GAP - span - 0.03, i + 0.12, "—", ha='right', va='center', fontsize=8, color=TEXT, alpha=0.5)
+            ax.text(GAP + span + 0.03, i + 0.12, "—", ha='left', va='center', fontsize=8, color=TEXT, alpha=0.5)
+
+        # Bottom rows with dashes, plus a hint for how to fill it in
+        bottom.set_xlim(-1, 1)
+        bottom.set_ylim(4, 0)
+        bottom.axhline(0.2, xmin=0.05, xmax=0.95, color=GRID, linewidth=1)
+        for y, label in [(0.8, 'Your chance'), (1.7, 'Residency'), (2.6, 'Campus size')]:
+            bottom.text(0, y, label, ha='center', va='center', fontsize=7.5, color=TEXT)
+            bottom.text(-0.5, y, "—", ha='center', va='center', fontsize=8, color=TEXT, alpha=0.5)
+            bottom.text(0.5, y, "—", ha='center', va='center', fontsize=8, color=TEXT, alpha=0.5)
+        bottom.text(0, 3.6, "Click schools in the ranking to compare them", ha='center', va='center',
+                    fontsize=7.5, fontstyle='italic', color=TEXT, alpha=0.6)
+
+    # Title and a colored box for each school, target is the side the next ranking click replaces
+    def draw_header(self, school_a, school_b, target):
         head = self.head
         # x goes -1 to 1 so 0 is the middle, same as the bars
         head.set_xlim(-1, 1)
@@ -119,15 +193,19 @@ class CollegeComparison:
         head.text(0, 1.15, "HEAD-TO-HEAD", ha="center", va="center", fontsize=8, fontweight="bold", color=TEXT)
 
         # School A box on the left, school B box on the right
-        self.draw_name_box(school_a, -1, A_COLOR, 'left')
-        self.draw_name_box(school_b, GAP, B_COLOR, 'right')
+        self.draw_name_box(school_a, -1, A_COLOR, 'left', target == 0)
+        self.draw_name_box(school_b, GAP, B_COLOR, 'right', target == 1)
 
     # Box with school name and state, colored by school A or B
-    def draw_name_box(self, school, x, color, align):
+    # The side that the next click will replace gets a dark outline
+    def draw_name_box(self, school, x, color, align, targeted):
         head = self.head
         # Box width lines up with the bars
         width = 1 - GAP
-        head.add_patch(Rectangle((x, 0.1), width, 0.8, facecolor=color, edgecolor='none'))
+        if targeted:
+            head.add_patch(Rectangle((x, 0.1), width, 0.8, facecolor=color, edgecolor='#8a93a6', linewidth=1.2))
+        else:
+            head.add_patch(Rectangle((x, 0.1), width, 0.8, facecolor=color, edgecolor='none'))
 
         # Cut off long names so they fit in the box
         name = school['ab']
@@ -273,4 +351,12 @@ class CollegeComparison:
             bottom.text(0, y, label, ha='center', va='center', fontsize=7.5, color=TEXT)
             bottom.text(-0.5, y, a_text, ha='center', va='center', fontsize=8, fontweight='bold', color=TEXT)
             bottom.text(0.5, y, b_text, ha='center', va='center', fontsize=8, fontweight='bold', color=TEXT)
+
+        # Hint that says which school the next ranking click replaces
+        if state.pair_target == 0:
+            replace_name = school_a['ab']
+        else:
+            replace_name = school_b['ab']
+        bottom.text(0, 3.6, f"Click a school in the ranking to replace {replace_name}  ·  click a name to switch side",
+                    ha='center', va='center', fontsize=7, fontstyle='italic', color=TEXT, alpha=0.6)
 

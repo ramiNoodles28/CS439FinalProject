@@ -209,8 +209,8 @@ def _setup_bar_tooltips(fig, ax, bounds_ref, fpt=None):
 
         bounds_ref["key"] = idx
 
-    fig.canvas.mpl_connect("motion_notify_event", on_motion)
-    return on_motion
+    # Return the connection id so the caller can disconnect it on re-render
+    return fig.canvas.mpl_connect("motion_notify_event", on_motion)
 
 
 def _draw_capsule(ax, x, y, width, height, color, zorder=3):
@@ -388,6 +388,7 @@ def create_ranking_list_figure(
     save_path=None,
     layout="compact",
     ax=None,
+    on_row_click=None,
 ):
     """
     Creates a Matplotlib figure displaying a vertical list of N horizontal bar items,
@@ -409,6 +410,7 @@ def create_ranking_list_figure(
         `items` (1 for the first entry, 2 for the second, ...), so no explicit
         rank field is required.
         - 'active': bool, optional (default True; controls left accent bar & row tint)
+        - 'idx': int, optional (the school's index; passed to `on_row_click`)
     row_pitch : float
         Vertical distance between row origins in normalized units.
     row_height : float
@@ -435,6 +437,9 @@ def create_ranking_list_figure(
           aspect ratio.
 
         Default is 'compact'.
+    on_row_click : callable or None
+        If given, clicking a school's row calls `on_row_click(item['idx'])`
+        (the dashboard uses this to send the school to the head-to-head).
 
     Returns
     -------
@@ -460,6 +465,7 @@ def create_ranking_list_figure(
         "sort_key": "fit_score",
         "sort_dir": "desc",
         "clickable": {},
+        "row_clicks": {},   # row background patch id() -> school idx (rebuilt each draw)
     }
     tip_holder = {"bounds": []}
 
@@ -484,12 +490,10 @@ def create_ranking_list_figure(
         fig = ax.figure
         # Drop handlers a previous render attached to this same axes so
         # re-rendering (dashboard state changes) doesn't stack motion/pick/resize
-        # callbacks on the shared canvas.
-        for _cb in getattr(ax, "_rlb_cids", {}).values():
-            try:
-                fig.canvas.mpl_disconnect(_cb)
-            except (ValueError, AttributeError):
-                pass
+        # callbacks on the shared canvas. mpl_disconnect needs the connection
+        # ids that mpl_connect returned (not the handler functions).
+        for _cid in getattr(ax, "_rlb_cids", {}).values():
+            fig.canvas.mpl_disconnect(_cid)
 
     ax.set_xlim(0, total_width)
     ax.set_ylim(-0.5, total_height + 0.5)
@@ -702,6 +706,7 @@ def create_ranking_list_figure(
         tip_holder["tip"] = None  # drop any stale hover annotation on redraw
         tip_holder["key"] = None
         clickable = {}
+        state["row_clicks"] = {}
 
         # ---- Header row (re-rendered on every redraw so it stays in sync) ----
         if show_headers:
@@ -800,11 +805,15 @@ def create_ranking_list_figure(
             is_active = item.get("active", True)
             row_bg = BG_ACTIVE if is_active else BG_INACTIVE
 
-            # 1. Row background container
-            ax.add_patch(
+            # 1. Row background container (clickable when on_row_click is given,
+            #    so clicking anywhere on the row sends the school to the head-to-head)
+            row_patch = ax.add_patch(
                 Rectangle((X_LEFT_BAR, y0), W_BAR, row_height,
                           facecolor=row_bg, edgecolor="none", zorder=1)
             )
+            if on_row_click is not None and "idx" in item:
+                row_patch.set_picker(True)
+                state["row_clicks"][id(row_patch)] = item["idx"]
 
             # 2. Far-left vertical teal status bar
             if is_active:
@@ -885,11 +894,18 @@ def create_ranking_list_figure(
         # artist -- one of the header labels -- is clicked). `event.artist` is
         # the picked Text; `event.mouseevent` carries the originating click.
         artist = event.artist
-        if artist is None or not isinstance(artist, Text):
-            return
         mouse = getattr(event, "mouseevent", None)
         if mouse is not None and getattr(mouse, "button", 1) not in (1, None):
             return  # ignore right/middle clicks
+
+        # A click on a school's row sends that school to the head-to-head
+        school_idx = state["row_clicks"].get(id(artist))
+        if school_idx is not None:
+            on_row_click(school_idx)
+            return
+
+        if artist is None or not isinstance(artist, Text):
+            return
         key = state["clickable"].get(id(artist))
         if key is None:
             return
@@ -908,22 +924,22 @@ def create_ranking_list_figure(
     # Wire the (single, persistent) hover-tooltip + click handlers, then render.
     if owns_figure:
         plt.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
-    _rlb_motion = _setup_bar_tooltips(fig, ax, tip_holder, fpt)
+    motion_cid = _setup_bar_tooltips(fig, ax, tip_holder, fpt)
     # Header labels are pickable; matplotlib reports a clicked pickable artist
     # via the `pick_event` signal (the button-press event itself does not
     # carry `artist` in modern matplotlib), so we listen for pick events.
-    fig.canvas.mpl_connect("pick_event", on_click)
+    pick_cid = fig.canvas.mpl_connect("pick_event", on_click)
 
     # Re-render on window resize so fonts rescale to the new canvas width and
     # the layout keeps the same relative density at any screen/resolution size.
     def _on_resize(event):
         draw_scene()
 
-    fig.canvas.mpl_connect("resize_event", _on_resize)
+    resize_cid = fig.canvas.mpl_connect("resize_event", _on_resize)
 
-    # Remember the handlers attached this pass so a later render into the same
+    # Remember the connection ids from this pass so a later render into the same
     # axes can disconnect them first (prevents stacking on the shared canvas).
-    ax._rlb_cids = {"motion": _rlb_motion, "pick": on_click, "resize": _on_resize}
+    ax._rlb_cids = {"motion": motion_cid, "pick": pick_cid, "resize": resize_cid}
 
     draw_scene()
 
@@ -959,6 +975,7 @@ def build_ranking_items(rows):
             "category": _CHANCE_TO_CATEGORY.get(r.chance, "Target"),
             "fit_score": r.fit,
             "active": True,
+            "idx": r.idx,
         })
     return items
 
@@ -1000,5 +1017,5 @@ class RankingBars:
             return
         create_ranking_list_figure(
             items, ax=self.ax, scale_mode="relative", show_headers=True,
-            layout="compact",
+            layout="compact", on_row_click=self.store.pick_school,
         )

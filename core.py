@@ -69,6 +69,7 @@ class State:
     weights: dict = field(default_factory=lambda: {"aff": 50, "earn": 50, "grad": 50, "adm": 50, "size": 50})  # each 0-100
     selected: list = field(default_factory=list)   # selected schools short list
     pair: list = field(default_factory=list)       # 2 selected schools comparison
+    pair_target: int = 1              # which head-to-head side the next click replaces, 0 = A (blue), 1 = B (orange)
     scatter_mode: str = "auto"        # cost earnings chart
 
 class Store:
@@ -79,9 +80,14 @@ class Store:
             setattr(self.state, k, v)
         for fn in self.listeners: fn(self.state)
     def pick_school(self, idx):
+        # Sends a clicked school to the head-to-head. If a side is missing it fills that side,
+        # otherwise it replaces the side picked by clicking a name box (pair_target), B by default.
+        # The target goes back to B after each pick. Clicking a school already in the pair does nothing
         p = list(self.state.pair)
-        if idx not in p:
-            self.update(pair=(p + [idx])[-2:])
+        if idx in p: return
+        if len(p) < 2: p.append(idx)
+        else: p[self.state.pair_target] = idx
+        self.update(pair=p, pair_target=1)
 
 #SAT/ACT CONVERSION TABLE
 _CT = [(770,16),(830,17),(880,18),(920,19),(960,20),(1000,21),(1040,22),(1080,23),(1120,24),(1160,25),(1200,26),
