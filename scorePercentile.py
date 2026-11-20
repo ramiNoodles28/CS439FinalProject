@@ -1,5 +1,6 @@
 from core import LIKELY, TARGET, REACH, A_COLOR, B_COLOR, TEXT, MUTED, GRID
 from core import act_to_sat, test_sat
+from matplotlib.patches import FancyBboxPatch
 
 # Status shown on the right of each school, (label, color)
 ABOVE = ("Above range", LIKELY)
@@ -79,12 +80,25 @@ class ScorePercentile:
         txt.set_ylim(n - .5, -.5)
 
         a_id, b_id = (list(state.pair) + [None, None])[:2]
+
+        bar_h = .5   # bar thickness
+        bbox = ax.get_window_extent()
+        px_x = bbox.width / (xmax - xmin)    # pixels per x unit
+        px_y = bbox.height / n               # pixels per y unit
+        aspect = px_x / px_y
+        radius_x = (bar_h / 2) / aspect      # corner radius in x units that gives a full semicircle end
+
         for i, (r, (lo, hi)) in enumerate(zip(rows, ranges)):
             (label, color), _ = self.status(score, lo, hi)
             fmt = "{:.0f}" if scale == "SAT" else "{:.0f}"
 
             # 25th-75th percentile bar, colored by where the student lands
-            ax.barh(i, hi - lo, left=lo, height=.5, color=color, alpha=.45, zorder=2)
+            w = hi - lo
+            rad = min(radius_x, w / 2)
+            ax.add_patch(FancyBboxPatch((lo, i - bar_h / 2), w, bar_h,
+                                        boxstyle=f"round,pad=0,rounding_size={rad}",
+                                        mutation_aspect=aspect,
+                                        facecolor=color, edgecolor="none", alpha=.45, zorder=2))
             ax.text(lo - (xmax - xmin) * .01, i, fmt.format(lo), ha="right", va="center", fontsize=5, color=MUTED)
             ax.text(hi + (xmax - xmin) * .01, i, fmt.format(hi), ha="left", va="center", fontsize=5, color=MUTED)
 
