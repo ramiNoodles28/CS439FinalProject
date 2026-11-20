@@ -1,21 +1,32 @@
 from matplotlib.widgets import TextBox, Button
 from matplotlib.patches import Rectangle
+from matplotlib.patches import Rectangle, FancyBboxPatch
 
 # Colors and helper functions shared with the rest of the dashboard
-from core import A_COLOR, B_COLOR, TEXT, GRID, MUTED, CHANCE_COLOR, SIZE_LABELS
+from core import A_COLOR, B_COLOR, TEXT, GRID, CHANCE_COLOR, SIZE_LABELS
 from core import money, pct, tuition_for, chance, size_index
 
-# Comparison rows - label, column in schools, formatting, higher vals
+# Comparison rows - label, column in schools, formatting, higher vals, scale low, scale high
 # Each tuple becomes one row of bars, higher vals = True means bigger number wins
+# Scale low/high is the range a full bar covers, picked to fit each metric:
+#   tuition: $0 to $75K (most expensive school in the data)
+#   earnings: $0 to $130K (only a dozen schools go past this)
+#   rates: 0 to 100%
+#   SAT: 400 to 1600 (the real SAT range)
+#   student to faculty: 0 to 30 (only a few schools go past this)
+# Values outside the range get cut off at the end of the bar
 METRICS = [
-    ('Your tuition', 'tuition', 'money', False),
-    ('Earnings (10 yr)', 'earn', 'money', True),
-    ('Graduation rate', 'gr', 'pct', True),
-    ('Retention rate', 'ret', 'pct', True),
-    ('Admit rate', 'adm', 'pct', True),
-    ('Average SAT', 'sat', 'num', True),
-    ('Student to Faculty', 'sfr', 'ratio', False)
+    ('Your tuition', 'tuition', 'money', False, 0, 75000),
+    ('Earnings (10 yr)', 'earn', 'money', True, 0, 130000),
+    ('Graduation rate', 'gr', 'pct', True, 0, 100),
+    ('Retention rate', 'ret', 'pct', True, 0, 100),
+    ('Admit rate', 'adm', 'pct', True, 0, 100),
+    ('Average SAT', 'sat', 'num', True, 400, 1600),
+    ('Student to Faculty', 'sfr', 'ratio', False, 0, 30)
 ]
+
+# Space between the center line and where the bars start
+GAP = 0.03
 
 # Head to head section
 class CollegeComparison:
@@ -72,7 +83,7 @@ class CollegeComparison:
 
     # Size label plus student count in thousands, ex. Very large (45K)
     def size_text(self, school):
-        return f"{SIZE_LABELS[size_index(school['sz'])]} ({school['sz'] / 1000:.0f}K)"
+        return f"{school['sz'] / 1000:.0f}K"
 
     # Called by main.py every time the state changes, redraws the whole section
     def render(self, rows, state):
@@ -86,7 +97,7 @@ class CollegeComparison:
 
         # Need two schools to compare
         if len(state.pair) < 2 or None in state.pair:
-            self.ax.text(0.5, 0.5, "Pick two schools", ha="center", va="center", color=MUTED,
+            self.ax.text(0.5, 0.5, "Pick two schools", ha="center", va="center", color=TEXT,
                          transform=self.ax.transAxes)
             return
 
@@ -105,18 +116,18 @@ class CollegeComparison:
         # x goes -1 to 1 so 0 is the middle, same as the bars
         head.set_xlim(-1, 1)
         head.set_ylim(0, 1)
-        head.text(0, 1.15, "HEAD-TO-HEAD", ha="center", va="center", fontsize=8, fontweight="bold", color=MUTED)
+        head.text(0, 1.15, "HEAD-TO-HEAD", ha="center", va="center", fontsize=8, fontweight="bold", color=TEXT)
 
         # School A box on the left, school B box on the right
         self.draw_name_box(school_a, -1, A_COLOR, 'left')
-        self.draw_name_box(school_b, .30, B_COLOR, 'right')
+        self.draw_name_box(school_b, GAP, B_COLOR, 'right')
 
     # Box with school name and state, colored by school A or B
     def draw_name_box(self, school, x, color, align):
         head = self.head
-        # Box width lines up with the bars (1 - gap of .30)
-        width = 0.70
-        head.add_patch(Rectangle((x, 0.1), width, 0.8, facecolor=color, edgecolor='none', alpha=0.3))
+        # Box width lines up with the bars
+        width = 1 - GAP
+        head.add_patch(Rectangle((x, 0.1), width, 0.8, facecolor=color, edgecolor='none'))
 
         # Cut off long names so they fit in the box
         name = school['ab']
@@ -129,9 +140,9 @@ class CollegeComparison:
 
         else:
             text_x = x + width - 0.04
-
-        head.text(text_x, 0.62, name, ha=align, va='center', fontsize=10, fontweight='bold', color=TEXT)
-        head.text(text_x, 0.3, school['st'], ha=align, va='center', fontsize=8, color=MUTED)
+            
+        head.text(text_x, 0.62, name, ha=align, va='center', fontsize=10, fontweight='bold', color='white')
+        head.text(text_x, 0.3, school['st'], ha=align, va='center', fontsize=8, color='white', alpha=0.8)
 
     # Mirrored bars, school A goes left and school B goes right, returns [A wins, B wins]
     def draw_bars(self, school_a, school_b, state):
@@ -141,11 +152,15 @@ class CollegeComparison:
         ax.set_ylim(len(METRICS)-0.5, -0.5)
 
         # Longest a bar can be, leaves room on the outside for the numbers
-        span = .45
+        span = .62
         wins = [0,0]
+        # Data units per pixel are different in x and y, aspect fixes that so the rounded ends are circles
+        box = ax.get_window_extent()
+        aspect = (len(METRICS) / box.height) / (2 / box.width)
+
 
         # Compare each metric and determine which school wins, then draw the bars for each metric
-        for i, (label, col, fmt, higher_better) in enumerate(METRICS):
+        for i, (label, col, fmt, higher_better, low, high) in enumerate(METRICS):
             val_a = self.get_value(school_a, col, state)
             val_b = self.get_value(school_b, col, state)
 
@@ -169,20 +184,43 @@ class CollegeComparison:
             elif b_wins:
                 wins[1] += 1
 
-            # Scale both bars to the bigger value so dollars, percents, and SAT all fit
-            biggest = max(val_a, val_b)
-            if biggest == 0:
-                biggest = 1
-            len_a = span * val_a / biggest
-            len_b = span * val_b / biggest
+            # Where each value sits in this metric's range, 0 = low end and 1 = high end
+            frac_a = (val_a - low) / (high - low)
+            frac_b = (val_b - low) / (high - low)
 
-            # Draw bar for both, starting at the gap edge (.30) and going outward
+            # Keep it between 0 and 1 so outliers don't run past the end of the track
+            frac_a = max(0, min(1, frac_a))
+            frac_b = max(0, min(1, frac_b))
+            len_a = span * frac_a
+            len_b = span * frac_b
+
+            # Draw bar for both, starting at the gap edge and going outward
             # Winner is solid, loser is faded
-            ax.barh(i, -len_a, left=-.30, height=0.55, color=A_COLOR, alpha=1 if a_wins else 0.3)
-            ax.barh(i, len_b, left=.30, height=0.55, color=B_COLOR, alpha=1 if b_wins else 0.3)
+            # Rounded bars with box starts at the bottom left corner, so A's box starts at its outer end
+            # Bars sit a little below the row center (+0.12) to leave room for the label above
+            bar_h = 0.4
 
-            # Metric name in middle
-            ax.text(0, i, label, ha='center', va='center', fontsize=6, fontweight='bold', color=MUTED)
+            # Light full-length track behind each bar so you can see where the scale ends
+            radius = bar_h / 2 / aspect
+            ax.add_patch(FancyBboxPatch((-GAP - span, i + 0.12 - bar_h / 2), span, bar_h,
+                                        boxstyle=f"round,pad=0,rounding_size={radius}", mutation_aspect=aspect,
+                                        facecolor=GRID, edgecolor='none', alpha=0.6))
+            ax.add_patch(FancyBboxPatch((GAP, i + 0.12 - bar_h / 2), span, bar_h,
+                                        boxstyle=f"round,pad=0,rounding_size={radius}", mutation_aspect=aspect,
+                                        facecolor=GRID, edgecolor='none', alpha=0.6))
+
+            radius = min(bar_h / 2 / aspect, len_a / 2)
+            ax.add_patch(FancyBboxPatch((-GAP - len_a, i + 0.12 - bar_h / 2), len_a, bar_h,
+                                        boxstyle=f"round,pad=0,rounding_size={radius}", mutation_aspect=aspect,
+                                        facecolor=A_COLOR, edgecolor='none', alpha=1 if a_wins else 0.3))
+            radius = min(bar_h / 2 / aspect, len_b / 2)
+            ax.add_patch(FancyBboxPatch((GAP, i + 0.12 - bar_h / 2), len_b, bar_h,
+                                        boxstyle=f"round,pad=0,rounding_size={radius}", mutation_aspect=aspect,
+                                        facecolor=B_COLOR, edgecolor='none', alpha=1 if b_wins else 0.3))
+
+
+            # Metric name above the bars (y is flipped so minus goes up)
+            ax.text(0, i - 0.26, label, ha='center', va='center', fontsize=7, fontweight='bold', color=TEXT)
 
             # Turn numbers into text based on the metric type
             if fmt == 'money':
@@ -201,9 +239,9 @@ class CollegeComparison:
                 text_a = f"{val_a}"
                 text_b = f"{val_b}"
 
-            # Add text labels for each bar, just past the end of the bar
-            ax.text(-.30 - len_a - 0.03, i, text_a, ha='right', va='center', fontsize=8, color=TEXT)
-            ax.text(.30 + len_b + 0.03, i, text_b, ha='left', va='center', fontsize=8, color=TEXT)
+            # Add text labels for each bar, just past the end of the track so they line up
+            ax.text(-GAP - span - 0.03, i + 0.12, text_a, ha='right', va='center', fontsize=8, color=TEXT)
+            ax.text(GAP + span + 0.03, i + 0.12, text_b, ha='left', va='center', fontsize=8, color=TEXT)
 
         return wins
 
@@ -220,7 +258,7 @@ class CollegeComparison:
         chance_b = chance(school_b, state.sat)[1]
 
         # Chance row colored by Likely/Target/Reach
-        bottom.text(0, 0.8, 'Your chance', ha='center', va='center', fontsize=7.5, color=MUTED)
+        bottom.text(0, 0.8, 'Your chance', ha='center', va='center', fontsize=7.5, color=TEXT)
         bottom.text(-0.5, 0.8, chance_a, ha='center', va='center', fontsize=8, fontweight='bold',
                     color=CHANCE_COLOR[chance_a])
         bottom.text(0.5, 0.8, chance_b, ha='center', va='center', fontsize=8, fontweight='bold',
@@ -232,11 +270,7 @@ class CollegeComparison:
             (2.6, 'Campus size', self.size_text(school_a), self.size_text(school_b)),
         ]
         for y, label, a_text, b_text in other_rows:
-            bottom.text(0, y, label, ha='center', va='center', fontsize=7.5, color=MUTED)
+            bottom.text(0, y, label, ha='center', va='center', fontsize=7.5, color=TEXT)
             bottom.text(-0.5, y, a_text, ha='center', va='center', fontsize=8, fontweight='bold', color=TEXT)
             bottom.text(0.5, y, b_text, ha='center', va='center', fontsize=8, fontweight='bold', color=TEXT)
-
-        # How many metrics each school won
-        edge = f"Edge on the numbers:  {school_a['ab']} {wins[0]}  –  {wins[1]} {school_b['ab']}"
-        bottom.text(0, 3.6, edge, ha='center', va='center', fontsize=8, fontweight='bold', color=TEXT)
 
