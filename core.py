@@ -73,20 +73,54 @@ class State:
     scatter_mode: str = "auto"        # cost earnings chart
 
 class Store:
-    def __init__(self, state): self.state, self.listeners = state, []
+    def __init__(self, state):
+        self.state = state
+        self.listeners = []
+
     def update(self, **kw):
+        changed = set()
         for k, v in kw.items():
-            if not hasattr(self.state, k): raise AttributeError(f"State has no field '{k}'")
-            setattr(self.state, k, v)
-        for fn in self.listeners: fn(self.state)
+            if not hasattr(self.state, k):
+                raise AttributeError(f"State has no field '{k}'")
+            if getattr(self.state, k) != v:
+                setattr(self.state, k, v)
+                changed.add(k)
+        if not changed:
+            return
+        for fn in self.listeners:
+            try:
+                fn(self.state, changed)
+            except TypeError:
+                fn(self.state)
+
+    def commit_pair(self, pair=None, ranked_indices=None):
+        pool = list(ranked_indices) if ranked_indices is not None else list(self.state.selected)
+        chosen = []
+        for idx in (pair or []):
+            if idx in pool and idx not in chosen:
+                chosen.append(idx)
+            if len(chosen) == 2:
+                break
+
+        if len(chosen) == 2:
+            final_pair = chosen
+        elif len(chosen) == 1:
+            first = chosen[0]
+            second = next((idx for idx in pool if idx != first), None)
+            final_pair = [first, second] if second is not None else [first]
+        else:
+            final_pair = pool[:2]
+
+        self.update(pair=final_pair, pair_target=1)
+
     def pick_school(self, idx):
-        # Sends a clicked school to the head-to-head. If a side is missing it fills that side,
-        # otherwise it replaces the side picked by clicking a name box (pair_target), B by default.
-        # The target goes back to B after each pick. Clicking a school already in the pair does nothing
         p = list(self.state.pair)
-        if idx in p: return
-        if len(p) < 2: p.append(idx)
-        else: p[self.state.pair_target] = idx
+        if idx in p:
+            return
+        if len(p) < 2:
+            p.append(idx)
+        else:
+            p[self.state.pair_target] = idx
         self.update(pair=p, pair_target=1)
 
 #SAT/ACT CONVERSION TABLE
@@ -105,7 +139,6 @@ def sat_to_act(sat):
     return 36
 
 def act_to_sat(act):
-    # converted an ACT score to an SAT score with the same table, going the other way
     if act <= _CT[0][1]:
         return _CT[0][0]
     for (a, b), (c, d) in zip(_CT, _CT[1:]):
@@ -114,8 +147,6 @@ def act_to_sat(act):
     return 1600
 
 def test_sat(state):
-    # created variable for the student's test score as an SAT number, using the better of SAT/ACT if both are checked
-    # returns None if neither test is checked (test-optional)
     scores = []
     if state.use_sat:
         scores.append(state.sat)
@@ -129,9 +160,7 @@ def size_index(sz): return sum(sz >= c for c in SIZE_CUTS)
 def _clamp01(x): return max(0.0, min(1.0, x))
 def tuition_for(s, st): return s['tin'] if st == s['st'] else s['tout']
 
-
 def chance(s, sat):
-    # sat can be None when no test score is given, then the chance only uses the admit rate
     a = min(.98, max(.02, s['adm'] / 100))
     score_part = 0 if sat is None else (sat - s['sat']) / 70
     p = 1 / (1 + math.exp(-(score_part + .8 * math.log(a / (1 - a)))))
@@ -139,26 +168,21 @@ def chance(s, sat):
 
 def compute(schools, state):
     rows = []
+    sat_score = test_sat(state)
+    budget = state.budget or 1
     for i in state.selected:
         s = schools.iloc[i]
         t = tuition_for(s, state.st)
-        B = state.budget or 1
-        p, lab = chance(s, test_sat(state))
-        c = {"aff": 100 - 30 * t / B if t <= B else max(0, 70 * (1 - (t - B) / B)),
+        p, lab = chance(s, sat_score)
+        c = {"aff": 100 - 30 * t / budget if t <= budget else max(0, 70 * (1 - (t - budget) / budget)),
              "earn": 100 * _clamp01((s["earn"] - 35000) / 65000), "grad": 100 * _clamp01((s["gr"] - 40) / 58),
              "adm": p * 100}
 
-        # left size out of the fit when the user picked "Any" size
         if state.pref_size is not None:
             c["size"] = 100 - 35 * abs(size_index(s["sz"]) - state.pref_size)
 
-        # only took off points for a missing major when a major was picked
-        if state.major == "any":
-            miss = False
-        else:
-            miss = not s[state.major]
+        miss = False if state.major == "any" else not s[state.major]
 
-        # each weight is 0-100 on its own, so I divided by their total to keep fit on a 0-100 scale
         total_w = sum(state.weights[k] for k in c)
         if total_w > 0:
             fit = sum(state.weights[k] * c[k] for k in c) / total_w
@@ -171,8 +195,6 @@ def compute(schools, state):
     return rows
 
 def fix_pair(rows, pair):
-    # Keep each compared school that is still selected in its same slot (A or B),
-    # then fill any empty slot with the highest ranked school not already in the pair
     ids = [r.idx for r in rows]
     slots = [p if p in ids else None for p in (list(pair) + [None, None])[:2]]
     if slots[0] is not None and slots[0] == slots[1]:
@@ -182,24 +204,20 @@ def fix_pair(rows, pair):
     return [s for s in slots if s is not None]
 
 def rebalance_weights(w, key, v):
-    # clamped the moved weight to 0-100 and copied the dict so the old state is not changed
     v = max(0, min(100, round(v)))
     w = dict(w)
     w[key] = v
 
-    # created variables for the other weights, their current total, and what is left for them
     others = [k for k in w if k != key]
     cur = sum(w[k] for k in others)
     rest = 100 - v
 
-    # scaled the other weights to share what is left, keeping their proportions
     for k in others:
         if cur > 0:
             w[k] = round(w[k] * rest / cur)
         else:
             w[k] = round(rest / len(others))
 
-    # fixed rounding error by adding/removing the difference on the largest other weight
     total = sum(w.values())
     if total != 100:
         big = max(others, key=lambda k: w[k])
