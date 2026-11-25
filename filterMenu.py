@@ -1,3 +1,4 @@
+from dataclasses import replace
 from matplotlib.widgets import TextBox, RadioButtons, CheckButtons, Slider, Button
 from matplotlib.patches import Rectangle
 from core import MAJORS, SIZE_LABELS, A_COLOR, B_COLOR, TEXT, MUTED, GRID, REACH, money
@@ -35,6 +36,39 @@ PANEL_BG = "#f6f8fb"
 ROW_HOVER = "#e6ebf3"
 
 
+class FastTextBox(TextBox):
+    # a TextBox that redraws only itself while typing
+    # (matplotlib's TextBox calls canvas.draw() on every key press, click and hover, which redraws every chart)
+
+    def _redraw_only_me(self, method, *args):
+        canvas = self.ax.figure.canvas
+        if not canvas.supports_blit:
+            return method(*args)
+
+        def draw_box(*_args, **_kwargs):
+            # put the real draw back first, so anything after this (like a submit) draws normally
+            del canvas.draw
+            self.ax.figure.draw_artist(self.ax)
+            canvas.blit(self.ax.bbox)
+
+        # swapped canvas.draw for one call so the TextBox's own draw only redraws this box
+        canvas.draw = draw_box
+        try:
+            return method(*args)
+        finally:
+            if "draw" in vars(canvas):
+                del canvas.draw
+
+    def _rendercursor(self):
+        return self._redraw_only_me(super()._rendercursor)
+
+    def stop_typing(self):
+        return self._redraw_only_me(super().stop_typing)
+
+    def _motion(self, event):
+        return self._redraw_only_me(super()._motion, event)
+
+
 class ProfileMenu:
     def __init__(self, store, schools):
         self.store = store
@@ -48,6 +82,9 @@ class ProfileMenu:
 
         # created variable for what the list rows are showing: "list" (my schools) or "suggest" (search matches)
         self.mode = "list"
+
+        # created dict of changes made in the menu that haven't been applied yet (field name -> new value)
+        self.draft = {}
 
     # ================================================================ build
     def build(self, fig, spec):
@@ -68,8 +105,12 @@ class ProfileMenu:
         # (I set widget.active instead of set_active(), since radio/check buttons use set_active() to pick an option)
         self.widgets = []
 
+        # created list of every axes and text in the menu, in drawing order, so I can redraw just the menu
+        self.menu_artists = []
+
         # drew light panel behind the whole menu
-        bg = fig.add_axes([box.x0, box.y0, box.width, box.height])
+        bg = self._axes([box.x0, box.y0, box.width, box.height])
+        self.bg = bg
         bg.set_facecolor(PANEL_BG)
         bg.set_xticks([])
         bg.set_yticks([])
@@ -87,14 +128,28 @@ class ProfileMenu:
         self._build_schools(state)
 
         # created status line at the bottom for confirmations and input errors
-        self.status = fig.text(self.x0 + self.w * 0.04, self.bottom + 0.008, "", fontsize=7,
+        self.status = self._text(self.x0 + self.w * 0.04, self.bottom + 0.008, "", fontsize=7,
                                color=MUTED, va="bottom")
+
+        self._build_apply_row()
 
         # built the dropdown last so it draws on top of everything else
         self._build_state_popup(state)
         fig.canvas.mpl_connect("button_press_event", self._on_press)
 
     # ---------------------------------------------------------------- layout helpers
+    def _axes(self, rect, **kwargs):
+        # added an axes to the figure and remembered it as part of the menu
+        ax = self.fig.add_axes(rect, **kwargs)
+        self.menu_artists.append(ax)
+        return ax
+
+    def _text(self, x, y, text, **kwargs):
+        # added a figure text and remembered it as part of the menu
+        t = self.fig.text(x, y, text, **kwargs)
+        self.menu_artists.append(t)
+        return t
+
     def _take(self, h, gap=0.006):
         # moved down the panel and returned the bottom y of the next row
         self.y = self.y - h - gap
@@ -103,17 +158,17 @@ class ProfileMenu:
     def _header(self, text, h, big=False):
         y = self._take(h)
         size = 12 if big else 9
-        self.fig.text(self.x0 + self.w * 0.04, y + h * 0.3, text, fontsize=size,
+        self._text(self.x0 + self.w * 0.04, y + h * 0.3, text, fontsize=size,
                       fontweight="bold", color=TEXT)
         return y
 
     def _label(self, text, y, h):
         # drew left-side label for a widget row
-        return self.fig.text(self.x0 + self.w * 0.04, y + h / 2, text, fontsize=FONT,
+        return self._text(self.x0 + self.w * 0.04, y + h / 2, text, fontsize=FONT,
                              color=MUTED, va="center")
 
     def _text_box(self, rect, initial):
-        box = TextBox(self.fig.add_axes(rect), "", initial=initial)
+        box = FastTextBox(self._axes(rect), "", initial=initial)
         box.text_disp.set_fontsize(FONT)
         self.widgets.append(box)
         return box
@@ -125,7 +180,7 @@ class ProfileMenu:
         self.state_row_y = y
         self._label("Home state", y, h)
 
-        ax = self.fig.add_axes([self.wx, y, self.ww, h])
+        ax = self._axes([self.wx, y, self.ww, h])
         self.state_button = Button(ax, self._state_text(state.st), color="white", hovercolor=ROW_HOVER)
         self.state_button.label.set_fontsize(FONT)
         for sp in ax.spines.values():
@@ -144,7 +199,7 @@ class ProfileMenu:
         height = self.popup_rows * row_h
         top = self.state_row_y - 0.002
 
-        self.popup_ax = self.fig.add_axes([self.x0 + self.w * 0.03, top - height, self.w * 0.94, height])
+        self.popup_ax = self._axes([self.x0 + self.w * 0.03, top - height, self.w * 0.94, height])
         self.popup_ax.set_zorder(50)
         self.popup_ax.set_xlim(0, self.popup_cols)
         self.popup_ax.set_ylim(self.popup_rows, 0)
@@ -176,12 +231,12 @@ class ProfileMenu:
     def _open_popup(self):
         # highlighted the current state and turned off the widgets under the dropdown
         for code, cell in self.popup_cells.items():
-            cell.set_visible(code == self.store.state.st)
+            cell.set_visible(code == self._view().st)
         for widget in self.widgets:
             widget.active = False
         self.popup_open = True
         self.popup_ax.set_visible(True)
-        self.fig.canvas.draw_idle()
+        self._redraw_menu()
 
     def _close_popup(self):
         self.popup_open = False
@@ -189,10 +244,9 @@ class ProfileMenu:
         for widget in self.widgets:
             widget.active = True
 
-        # re-hid any empty school rows and re-locked Size, since I just turned everything back on
-        self._refresh_rows()
-        self._sync_priorities(self.store.state)
-        self.fig.canvas.draw_idle()
+        # re-synced everything, which re-hides empty school rows, re-locks Size and sets the apply buttons
+        self._sync(self._view())
+        self._redraw_menu()
 
     def _on_press(self, event):
         # picked a state if the click is inside the open dropdown, otherwise just closed it
@@ -208,7 +262,7 @@ class ProfileMenu:
                 code = STATE_ORDER[k]
                 self._close_popup()
                 self._ok(f"home state set to {STATE_NAMES[code]}")
-                self.store.update(st=code)
+                self._stage(st=code)
                 return
         self._close_popup()
 
@@ -221,20 +275,21 @@ class ProfileMenu:
         y = self._take(h)
         self.sat_check = self._test_check("SAT", state.use_sat, y, h)
         self.sat_box = self._text_box([self.wx, y, self.ww * 0.45, h], str(state.sat))
-        self.fig.text(self.wx + self.ww * 0.5, y + h / 2, "400-1600", fontsize=6.5, color=MUTED, va="center")
+        self._text(self.wx + self.ww * 0.5, y + h / 2, "400-1600", fontsize=6.5, color=MUTED, va="center")
         self.sat_check.on_clicked(self._on_test_check)
         self.sat_box.on_submit(self._on_sat)
 
         y = self._take(h)
         self.act_check = self._test_check("ACT", state.use_act, y, h)
         self.act_box = self._text_box([self.wx, y, self.ww * 0.45, h], str(state.act))
-        self.fig.text(self.wx + self.ww * 0.5, y + h / 2, "1-36", fontsize=6.5, color=MUTED, va="center")
+        self._text(self.wx + self.ww * 0.5, y + h / 2, "1-36", fontsize=6.5, color=MUTED, va="center")
         self.act_check.on_clicked(self._on_test_check)
         self.act_box.on_submit(self._on_act)
 
     def _test_check(self, name, on, y, h):
-        ax = self.fig.add_axes([self.x0 + self.w * 0.02, y, self.w * 0.34, h], frameon=False)
-        check = CheckButtons(ax, [name], [on], check_props={"facecolor": A_COLOR})
+        ax = self._axes([self.x0 + self.w * 0.02, y, self.w * 0.34, h], frameon=False)
+        check = CheckButtons(ax, [name], [on], check_props={"facecolor": A_COLOR}, useblit=False)
+        check.drawon = False
         check.labels[0].set_fontsize(FONT)
         self.widgets.append(check)
         return check
@@ -251,11 +306,12 @@ class ProfileMenu:
         # created slider under the text box, both set the same budget
         h = 0.018
         y = self._take(h, gap=0.004)
-        ax = self.fig.add_axes([self.wx, y, self.ww, h])
+        ax = self._axes([self.wx, y, self.ww, h])
         self.budget_slider = Slider(ax, "", BUDGET_MIN, BUDGET_MAX, valinit=min(state.budget, BUDGET_MAX),
                                     valstep=BUDGET_STEP, color=A_COLOR, track_color=GRID)
         self.budget_slider.valtext.set_visible(False)
         self.budget_slider.vline.set_visible(False)
+        self.budget_slider.drawon = False
         self.budget_slider.on_changed(self._on_budget_slider)
         self.widgets.append(self.budget_slider)
 
@@ -268,22 +324,23 @@ class ProfileMenu:
         self._header("Intended major", 0.02)
         h = 0.064
         y = self._take(h, gap=0)
-        ax = self.fig.add_axes([self.x0 + self.w * 0.04, y, self.w * 0.9, h], frameon=False)
+        ax = self._axes([self.x0 + self.w * 0.04, y, self.w * 0.9, h], frameon=False)
         self.major_radio = RadioButtons(ax, major_labels,
                                         active=self.major_keys.index(state.major),
-                                        radio_props={"facecolor": A_COLOR})
+                                        radio_props={"facecolor": A_COLOR}, useblit=False)
         self.major_radio.on_clicked(self._on_major)
 
         # created size options with "Any" first, so radio index 0 = None and index k = size k - 1
         self._header("Campus size", 0.02)
         h = 0.076
         y = self._take(h, gap=0)
-        ax = self.fig.add_axes([self.x0 + self.w * 0.04, y, self.w * 0.9, h], frameon=False)
+        ax = self._axes([self.x0 + self.w * 0.04, y, self.w * 0.9, h], frameon=False)
         self.size_radio = RadioButtons(ax, ["Any"] + SIZE_LABELS, active=size_to_radio(state.pref_size),
-                                       radio_props={"facecolor": A_COLOR})
+                                       radio_props={"facecolor": A_COLOR}, useblit=False)
         self.size_radio.on_clicked(self._on_size)
 
         for radio in (self.major_radio, self.size_radio):
+            radio.drawon = False
             self.widgets.append(radio)
             for t in radio.labels:
                 t.set_fontsize(FONT)
@@ -293,7 +350,7 @@ class ProfileMenu:
         y = self._header("Priorities", 0.02)
 
         # created total next to the header, each priority is 0-100 so the max is 500
-        self.total_text = self.fig.text(self.x0 + self.w * 0.96, y + 0.006, "", fontsize=7,
+        self.total_text = self._text(self.x0 + self.w * 0.96, y + 0.006, "", fontsize=7,
                                         color=MUTED, ha="right")
 
         # created dicts of sliders and text boxes by weight key, each priority moves on its own
@@ -305,10 +362,11 @@ class ProfileMenu:
             y = self._take(h, gap=0.005)
             self.weight_labels[key] = self._label(label, y, h)
 
-            ax = self.fig.add_axes([self.wx, y, self.ww * 0.64, h])
+            ax = self._axes([self.wx, y, self.ww * 0.64, h])
             s = Slider(ax, "", 0, 100, valinit=state.weights[key], valstep=1, color=A_COLOR, track_color=GRID)
             s.valtext.set_visible(False)
             s.vline.set_visible(False)
+            s.drawon = False
             s.on_changed(lambda val, k=key: self._on_weight_slider(k, val))
             self.sliders[key] = s
             self.widgets.append(s)
@@ -320,7 +378,7 @@ class ProfileMenu:
     # ---------------------------------------------------------------- schools
     def _build_schools(self, state):
         y = self._header("My schools", 0.02)
-        self.count_text = self.fig.text(self.x0 + self.w * 0.96, y + 0.006, "", fontsize=7,
+        self.count_text = self._text(self.x0 + self.w * 0.96, y + 0.006, "", fontsize=7,
                                         color=MUTED, ha="right")
 
         # created search box, typing in it shows matching schools in the rows below
@@ -332,13 +390,13 @@ class ProfileMenu:
         self.search_box.on_submit(self._on_search_submit)
 
         # created as many rows as fit above the status line (up to MAX_SCHOOLS)
-        row_h = 0.019
-        list_bottom = self.bottom + 0.026
-        n_rows = int((self.y - 0.004 - list_bottom) / row_h)
-        n_rows = max(1, min(MAX_SCHOOLS, n_rows))
+        # shrank the rows a little if needed so all MAX_SCHOOLS fit above the apply buttons
+        list_bottom = self.bottom + 0.062
+        n_rows = MAX_SCHOOLS
+        row_h = min(0.019, (self.y - 0.004 - list_bottom) / n_rows)
 
         # created hint shown when the list is empty
-        self.hint = self.fig.text(self.x0 + self.w * 0.5, self.y - 0.04, "", fontsize=7.5,
+        self.hint = self._text(self.x0 + self.w * 0.5, self.y - 0.04, "", fontsize=7.5,
                                   color=MUTED, ha="center", va="center")
 
         # created one name button and one remove (x) button per row
@@ -346,14 +404,14 @@ class ProfileMenu:
         self.remove_buttons = []
         for k in range(n_rows):
             y = self._take(row_h, gap=0)
-            name_ax = self.fig.add_axes([self.x0 + self.w * 0.03, y, self.w * 0.80, row_h * 0.92])
+            name_ax = self._axes([self.x0 + self.w * 0.03, y, self.w * 0.80, row_h * 0.92])
             name_btn = Button(name_ax, "", color=PANEL_BG, hovercolor=ROW_HOVER)
             name_btn.label.set_fontsize(FONT)
             name_btn.label.set_horizontalalignment("left")
             name_btn.label.set_x(0.03)
             name_btn.on_clicked(lambda _e, row=k: self._on_row_click(row))
 
-            x_ax = self.fig.add_axes([self.x0 + self.w * 0.84, y, self.w * 0.12, row_h * 0.92])
+            x_ax = self._axes([self.x0 + self.w * 0.84, y, self.w * 0.12, row_h * 0.92])
             x_btn = Button(x_ax, "×", color=PANEL_BG, hovercolor="#f7dede")
             x_btn.label.set_fontsize(9)
             x_btn.label.set_color(MUTED)
@@ -379,7 +437,7 @@ class ProfileMenu:
 
     def _show_list(self):
         self.mode = "list"
-        state = self.store.state
+        state = self._view()
         self.row_idx = list(state.selected)
 
         if len(self.row_idx) == 0:
@@ -408,7 +466,7 @@ class ProfileMenu:
 
     def _show_suggestions(self, query):
         self.mode = "suggest"
-        selected = self.store.state.selected
+        selected = self._view().selected
         self.row_idx = search_schools(self.schools, query, len(self.name_buttons))
 
         if len(self.row_idx) == 0:
@@ -443,6 +501,93 @@ class ProfileMenu:
             btn.ax.set_visible(False)
             btn.active = False
 
+    # ================================================================ draft + apply
+    def _view(self):
+        # created copy of the state with my unapplied changes on top, this is what the menu shows
+        return replace(self.store.state, **self.draft)
+
+    def _stage(self, **changes):
+        # saved changes in the draft instead of updating the dashboard right away
+        state = self.store.state
+        for key, value in changes.items():
+            if getattr(state, key) == value:
+                # removed it from the draft since it's back to what the dashboard already shows
+                self.draft.pop(key, None)
+            else:
+                self.draft[key] = value
+
+        # only redrew the menu, the charts wait for Apply
+        self._sync(self._view())
+        self._redraw_menu()
+
+    def _build_apply_row(self):
+        # created Apply and Discard buttons at the bottom of the panel
+        h = 0.03
+        y = self.bottom + 0.026
+
+        ax = self._axes([self.x0 + self.w * 0.04, y, self.w * 0.60, h])
+        self.apply_button = Button(ax, "No changes", color=GRID, hovercolor=GRID)
+        self.apply_button.label.set_fontsize(FONT)
+        self.apply_button.label.set_fontweight("bold")
+        self.apply_button.on_clicked(self._on_apply)
+
+        ax = self._axes([self.x0 + self.w * 0.67, y, self.w * 0.29, h])
+        self.discard_button = Button(ax, "Discard", color="white", hovercolor=ROW_HOVER)
+        self.discard_button.label.set_fontsize(FONT)
+
+        self.discard_button.on_clicked(self._on_discard)
+
+        for btn in (self.apply_button, self.discard_button):
+            for sp in btn.ax.spines.values():
+                sp.set_color(GRID)
+            self.widgets.append(btn)
+
+    def _sync_apply_row(self):
+        # made Apply stand out only when there is something to apply
+        pending = len(self.draft) > 0
+        btn = self.apply_button
+        if pending:
+            btn.label.set_text("Apply changes")
+            btn.label.set_color("white")
+            btn.color = A_COLOR
+            btn.hovercolor = "#0b7565"
+        else:
+            btn.label.set_text("No changes")
+            btn.label.set_color(MUTED)
+            btn.color = GRID
+            btn.hovercolor = GRID
+        btn.ax.set_facecolor(btn.color)
+        btn.active = pending and not self.popup_open
+
+        self.discard_button.label.set_color(TEXT if pending else GRID)
+        self.discard_button.active = pending and not self.popup_open
+
+    def _on_apply(self, _event):
+        if len(self.draft) == 0:
+            return
+
+        # sent every change in one update, so the dashboard recomputes and redraws once
+        changes = dict(self.draft)
+        self.draft.clear()
+        self._ok("changes applied")
+        self.store.update(**changes)
+
+    def _on_discard(self, _event):
+        self.draft.clear()
+        self._ok("changes discarded")
+        self._sync(self._view())
+        self._redraw_menu()
+
+    def _redraw_menu(self):
+        # redrew only the menu panel instead of the whole dashboard (blitting)
+        canvas = self.fig.canvas
+        if not canvas.supports_blit:
+            canvas.draw_idle()
+            return
+        for artist in self.menu_artists:
+            self.fig.draw_artist(artist)
+        canvas.blit(self.bg.bbox)
+
     # ================================================================ callbacks
     def _on_test_check(self, _label):
         use_sat = self.sat_check.get_status()[0]
@@ -453,32 +598,37 @@ class ProfileMenu:
             self._ok("using the better of your SAT and ACT")
         else:
             self._ok("")
-        self.store.update(use_sat=use_sat, use_act=use_act)
+        self._stage(use_sat=use_sat, use_act=use_act)
 
     def _on_sat(self, text):
+        view = self._view()
+
         # checked the SAT is a whole number between 400 and 1600
         sat = parse_int(text)
         if sat is None or sat < 400 or sat > 1600:
             self._error("SAT must be a number from 400 to 1600")
-            self._set_box(self.sat_box, str(self.store.state.sat))
+            self._replace_text(self.sat_box, str(view.sat))
             return
-        if sat == self.store.state.sat:
+        if sat == view.sat:
+            self._stage()
             return
 
         # checked the SAT box too, since typing a new score means they want to use it
         self._ok(f"SAT set to {sat}")
-        self.store.update(sat=sat, use_sat=True)
+        self._stage(sat=sat, use_sat=True)
 
     def _on_act(self, text):
+        view = self._view()
         act = parse_int(text)
         if act is None or act < 1 or act > 36:
             self._error("ACT must be a number from 1 to 36")
-            self._set_box(self.act_box, str(self.store.state.act))
+            self._replace_text(self.act_box, str(view.act))
             return
-        if act == self.store.state.act:
+        if act == view.act:
+            self._stage()
             return
         self._ok(f"ACT set to {act}")
-        self.store.update(act=act, use_act=True)
+        self._stage(act=act, use_act=True)
 
     def _keep_dollar_sign(self, text):
         # kept the "$" locked at the front while typing: removed any "$" the user typed or moved,
@@ -490,64 +640,69 @@ class ProfileMenu:
         if fixed == text and box.cursor_index >= 1:
             return
 
-        box.eventson = False
-        box.set_val(fixed)
-        box.eventson = True
-
-        # moved the cursor to where it was, counting the "$" (TextBox has no public way to do this)
+        # set the text directly (set_val would redraw the box twice) and moved the cursor after the "$"
+        box.text_disp.set_text(fixed)
         box.cursor_index = 1 + len(before_cursor)
         box._rendercursor()
 
     def _on_budget_box(self, text):
+        view = self._view()
         budget = parse_money(text)
         if budget is None or budget <= 0 or budget > BUDGET_MAX:
             self._error(f"budget must be $1 to {money(BUDGET_MAX)} (ex. 35000 or 35k)")
-            self._set_box(self.budget_box, money(self.store.state.budget))
+            self._replace_text(self.budget_box, money(view.budget))
             return
-        if budget == self.store.state.budget:
+
+        # reformatted what they typed, like "50k" -> "$50,000"
+        self._replace_text(self.budget_box, money(budget))
+        if budget == view.budget:
+            self._stage()
             return
         self._ok(f"budget set to {money(budget)}")
-        self.store.update(budget=budget)
+        self._stage(budget=budget)
 
     def _on_budget_slider(self, val):
-        self.store.update(budget=int(val))
+        self._stage(budget=int(val))
 
     def _on_major(self, _label):
         index = self.major_radio.index_selected
-        self.store.update(major=self.major_keys[index])
+        self._stage(major=self.major_keys[index])
 
     def _on_size(self, _label):
         index = self.size_radio.index_selected
-        self.store.update(pref_size=radio_to_size(index))
+        self._stage(pref_size=radio_to_size(index))
 
     def _on_weight_slider(self, key, val):
         # copied the weights and changed only this one, the others stay where they are
-        new = dict(self.store.state.weights)
+        new = dict(self._view().weights)
         new[key] = int(val)
-        self.store.update(weights=new)
+        self._stage(weights=new)
 
     def _on_weight_box(self, key, text):
+        view = self._view()
         value = parse_int(text)
         if value is None or value < 0 or value > 100:
             self._error("priorities must be a number from 0 to 100")
-            self._set_box(self.weight_boxes[key], str(self.store.state.weights[key]))
+            self._replace_text(self.weight_boxes[key], str(view.weights[key]))
             return
-        if value == self.store.state.weights[key]:
+        if value == view.weights[key]:
+            self._stage()
             return
-        new = dict(self.store.state.weights)
+        new = dict(view.weights)
         new[key] = value
-        self.store.update(weights=new)
+        self._stage(weights=new)
 
     def _on_search_change(self, _text):
         self._refresh_rows()
-        self.fig.canvas.draw_idle()
+        self._redraw_menu()
 
     def _on_search_submit(self, _text):
         # only added a school when Enter was pressed (clicking away from the box also sends a submit)
         if not self.search_box.capturekeystrokes:
             return
+        selected = self._view().selected
         for idx in self.row_idx:
-            if idx not in self.store.state.selected:
+            if idx not in selected:
                 self._add_school(idx)
                 return
         if len(self.row_idx) == 0:
@@ -559,24 +714,29 @@ class ProfileMenu:
         idx = self.row_idx[row]
         if self.mode == "suggest":
             self._add_school(idx)
-        else:
-            # clicking a school on my list sends it to the head-to-head comparison
-            self._ok(f"comparing {self.schools.iloc[idx]['ab']}")
-            self.store.pick_school(idx)
+            return
+
+        # clicking a school on my list sends it to the head-to-head comparison
+        # (only for schools already applied, since the charts don't know about the others yet)
+        if idx not in self.store.state.selected:
+            self._error("apply changes first to compare this school")
+            return
+        self._ok(f"comparing {self.schools.iloc[idx]['ab']}")
+        self.store.pick_school(idx)
 
     def _on_remove_click(self, row):
         if self.mode != "list" or row >= len(self.row_idx):
             return
         idx = self.row_idx[row]
         selected = []
-        for i in self.store.state.selected:
+        for i in self._view().selected:
             if i != idx:
                 selected.append(i)
         self._ok(f"removed {self.schools.iloc[idx]['ab']}")
-        self.store.update(selected=selected)
+        self._stage(selected=selected)
 
     def _add_school(self, idx):
-        selected = list(self.store.state.selected)
+        selected = list(self._view().selected)
         name = self.schools.iloc[idx]["ab"]
         if idx in selected:
             self._error(f"{name} is already on your list")
@@ -587,35 +747,44 @@ class ProfileMenu:
         selected.append(idx)
 
         # cleared the search first so the rows switch back to my list
-        self._set_box(self.search_box, "")
-        self.search_box.cursor_index = 0
+        self._replace_text(self.search_box, "")
         self._ok(f"added {name}")
-        self.store.update(selected=selected)
+        self._stage(selected=selected)
 
     # ================================================================ render
     def render(self, rows, state):
-        # synced every widget to the state without firing callbacks (other sections can change state too)
-        self.state_button.label.set_text(self._state_text(state.st))
+        # called by main after the dashboard updates: dropped draft changes the state already has
+        for key in list(self.draft):
+            if getattr(state, key) == self.draft[key]:
+                del self.draft[key]
 
-        self._set_check(self.sat_check, state.use_sat)
-        self._set_check(self.act_check, state.use_act)
-        self._set_box(self.sat_box, str(state.sat))
-        self._set_box(self.act_box, str(state.act))
+        # main redraws the whole figure after this, so I only synced the widgets here
+        self._sync(self._view())
+
+    def _sync(self, view):
+        # synced every widget to the view (state + draft) without firing callbacks
+        self.state_button.label.set_text(self._state_text(view.st))
+
+        self._set_check(self.sat_check, view.use_sat)
+        self._set_check(self.act_check, view.use_act)
+        self._set_box(self.sat_box, str(view.sat))
+        self._set_box(self.act_box, str(view.act))
 
         # grayed out the score of a test that isn't being used
-        self.sat_box.text_disp.set_color(TEXT if state.use_sat else MUTED)
-        self.act_box.text_disp.set_color(TEXT if state.use_act else MUTED)
+        self.sat_box.text_disp.set_color(TEXT if view.use_sat else MUTED)
+        self.act_box.text_disp.set_color(TEXT if view.use_act else MUTED)
 
-        self._set_box(self.budget_box, money(state.budget))
-        self._set_slider(self.budget_slider, min(state.budget, BUDGET_MAX))
+        self._set_box(self.budget_box, money(view.budget))
+        self._set_slider(self.budget_slider, min(view.budget, BUDGET_MAX))
 
-        self._set_radio(self.major_radio, self.major_keys.index(state.major))
-        self._set_radio(self.size_radio, size_to_radio(state.pref_size))
+        self._set_radio(self.major_radio, self.major_keys.index(view.major))
+        self._set_radio(self.size_radio, size_to_radio(view.pref_size))
 
-        self._sync_priorities(state)
+        self._sync_priorities(view)
 
-        self.count_text.set_text(f"{len(state.selected)} / {len(self.name_buttons)}")
+        self.count_text.set_text(f"{len(view.selected)} / {len(self.name_buttons)}")
         self._refresh_rows()
+        self._sync_apply_row()
 
     def _sync_priorities(self, state):
         # created variable for whether the Size priority is used (it isn't when campus size is "Any")
@@ -653,6 +822,8 @@ class ProfileMenu:
         self.total_text.set_text(f"total {total} / {100 * count}")
 
     # ---------------------------------------------------------------- sync helpers
+    # none of these draw anything: _redraw_menu() or main's redraw shows the changes
+
     def _set_slider(self, slider, value):
         if slider.val != value:
             slider.eventson = False
@@ -660,11 +831,20 @@ class ProfileMenu:
             slider.eventson = True
 
     def _set_box(self, box, text):
-        # only replaced the text when it changed, so I don't wipe what the user is typing
+        # skipped the box the user is typing in, so I don't wipe what they're typing
+        if box.capturekeystrokes:
+            return
+
+        # set the text directly, since TextBox.set_val redraws the whole figure
         if box.text != text:
-            box.eventson = False
-            box.set_val(text)
-            box.eventson = True
+            box.text_disp.set_text(text)
+
+    def _replace_text(self, box, text):
+        # replaced a box's text even while typing in it, with the cursor moved to the end
+        box.text_disp.set_text(text)
+        box.cursor_index = len(text)
+        if box.capturekeystrokes:
+            box._rendercursor()
 
     def _set_radio(self, radio, index):
         if radio.index_selected != index:
@@ -685,7 +865,7 @@ class ProfileMenu:
     def _error(self, msg):
         self.status.set_text(msg)
         self.status.set_color(REACH)
-        self.fig.canvas.draw_idle()
+        self._redraw_menu()
 
 
 def size_to_radio(pref_size):
